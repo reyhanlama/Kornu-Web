@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { extractArticle, validatePublicURL } from './article.js';
+import { extractArticle, extractMediumFeed, validatePublicURL } from './article.js';
 
 const paragraphOne = 'Reading slowly gives an idea space to settle before we decide what we think about it.';
 const paragraphTwo = 'A good note records the exact sentence that made us pause and the question it brought to mind.';
@@ -32,6 +32,18 @@ test('preserves article structure and safe inline formatting', () => {
 
 test('rejects incomplete pages instead of presenting a misleading reading copy', () => {
   assert.throws(() => extractArticle('<html><body><p>Short preview.</p></body></html>', 'https://example.com/essay'), /not find enough article text/);
+});
+
+test('uses a matching full Medium RSS entry and removes its feed footer', () => {
+  const url = 'https://medium.com/blog/a-full-story-13a9ef77962b';
+  const content = `<p>${paragraphOne.repeat(15)}</p><p>${paragraphTwo.repeat(15)}</p><figure><img src="https://cdn-images-1.medium.com/photo.jpg" alt="Notebook"></figure><p>${paragraphThree.repeat(15)}</p><p>${paragraphFour.repeat(15)}</p><hr><p>This was originally published on Medium.</p>`;
+  const feed = `<rss xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel><item><title>A full story</title><link>${url}?source=rss</link><dc:creator>Medium Writer</dc:creator><content:encoded><![CDATA[${content}]]></content:encoded></item></channel></rss>`;
+  const article = extractMediumFeed(feed, url);
+  assert.equal(article.title, 'A full story');
+  assert.equal(article.byline, 'Medium Writer');
+  assert.equal(article.images[0].url, 'https://cdn-images-1.medium.com/photo.jpg');
+  assert.equal(article.paragraphs.some((paragraph) => paragraph.includes('originally published')), false);
+  assert.equal(extractMediumFeed(feed, 'https://medium.com/blog/another-story-aabbccddeeff'), null);
 });
 
 test('refuses local import targets', async () => {

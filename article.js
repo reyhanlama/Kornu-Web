@@ -7,6 +7,7 @@ import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
 
 const MAX_HTML_BYTES = 5_000_000;
+const MAX_FEED_BYTES = 2_000_000;
 const MAX_IMAGE_BYTES = 4_000_000;
 const MAX_IMAGES = 30;
 
@@ -223,7 +224,7 @@ function requestRemote(url, acceptedType, limit) {
       signal: AbortSignal.timeout(20000),
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; KornuReader/0.2)',
-        Accept: acceptedType === 'html' ? 'text/html,application/xhtml+xml' : 'image/avif,image/webp,image/png,image/jpeg,image/gif',
+        Accept: acceptedType === 'html' ? 'text/html,application/xhtml+xml' : acceptedType === 'feed' ? 'application/rss+xml,application/xml,text/xml' : 'image/avif,image/webp,image/png,image/jpeg,image/gif',
         'Accept-Encoding': 'gzip, deflate, br'
       }
     }, async (response) => {
@@ -236,6 +237,7 @@ function requestRemote(url, acceptedType, limit) {
         if (response.statusCode < 200 || response.statusCode >= 300) throw new Error(`The source returned ${response.statusCode}.`);
         const mime = (response.headers['content-type'] || '').split(';')[0].toLowerCase();
         if (acceptedType === 'html' && !['text/html', 'application/xhtml+xml'].includes(mime)) throw new Error('This link is not an HTML article.');
+        if (acceptedType === 'feed' && !['application/rss+xml', 'application/xml', 'text/xml'].includes(mime)) throw new Error('The source did not provide an RSS feed.');
         if (acceptedType === 'image' && !['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif'].includes(mime)) throw new Error('This asset is not a supported image.');
         if (Number(response.headers['content-length']) > limit) throw new Error('The source is too large to capture.');
         const encoding = response.headers['content-encoding'];
@@ -271,8 +273,52 @@ async function fetchRemote(input, acceptedType, limit) {
 }
 
 export async function importArticle(input) {
-  const result = await fetchRemote(input, 'html', MAX_HTML_BYTES);
-  return extractArticle(result.bytes.toString('utf8'), result.url);
+  const url = await validatePublicURL(input);
+  try {
+    const result = await fetchRemote(url.href, 'html', MAX_HTML_BYTES);
+    return extractArticle(result.bytes.toString('utf8'), result.url);
+  } catch (error) {
+    if (!['medium.com', 'www.medium.com'].includes(url.hostname) || error.message !== 'The source returned 403.') throw error;
+    const scope = url.pathname.split('/').filter(Boolean)[0];
+    if (!scope || !/^@?[a-z0-9._-]+$/i.test(scope) || !/-[a-f0-9]{12}$/i.test(url.pathname)) throw error;
+    try {
+      const feed = await fetchRemote(`https://medium.com/feed/${scope}`, 'feed', MAX_FEED_BYTES);
+      const article = extractMediumFeed(feed.bytes.toString('utf8'), url.href);
+      if (article) return article;
+    } catch { /* The feed is optional; the original remains available. */ }
+    throw new Error('Medium blocked direct capture, and this story is not available in its public RSS feed. Open the original story instead.');
+  }
+}
+
+export function extractMediumFeed(xml, articleURL) {
+  const url = new URL(articleURL);
+  const id = url.pathname.match(/-([a-f0-9]{12})$/i)?.[1]?.toLowerCase();
+  if (!id) return null;
+  const document = new JSDOM(xml, { contentType: 'text/xml' }).window.document;
+  const item = [...document.querySelectorAll('item')].find((entry) => {
+    try {
+      const link = new URL(entry.querySelector('link')?.textContent || '');
+      return link.pathname.match(/-([a-f0-9]{12})$/i)?.[1]?.toLowerCase() === id;
+    } catch { return false; }
+  });
+  if (!item) return null;
+  const content = item.getElementsByTagName('content:encoded')[0]?.textContent;
+  if (!content) return null;
+  const title = item.querySelector('title')?.textContent?.trim() || 'Medium story';
+  const author = item.getElementsByTagName('dc:creator')[0]?.textContent?.trim() || '';
+  const body = new JSDOM(`<article>${content}</article>`, { url: url.href }).window.document;
+  const root = body.querySelector('article');
+  const footer = [...root.querySelectorAll('hr')].at(-1);
+  if (footer?.nextElementSibling?.textContent.includes('was originally published')) {
+    for (let node = footer; node;) {
+      const next = node.nextElementSibling;
+      node.remove();
+      node = next;
+    }
+  }
+  const result = extractArticle(`<html><body><article><h1>${escapeHTML(title)}</h1>${root.innerHTML}</article></body></html>`, url.href);
+  if (result.wordCount < 700) return null;
+  return { ...result, title, byline: author, siteName: 'Medium', warning: 'Captured from Medium’s public RSS feed. Check the original if this copy appears incomplete.' };
 }
 
 export async function importImage(input) {

@@ -20,6 +20,7 @@ Deploy from the Git repository so Netlify builds the `netlify/functions` code. U
 
 - Library, Inbox, Marks & Notes, and responsive article Reader.
 - Paste a public article link. Mozilla Readability prepares a structured reading copy with headings, emphasis, links, lists, quotations, tables, image placement, and author information when available.
+- For a Medium story blocked by its browser challenge, Kornu tries the publication or author's public RSS feed. It accepts a matching long entry and labels the reading as an RSS capture.
 - Kornu downloads supported article images through its local capture server and stores them with the reading in browser IndexedDB. A failed image appears as a placeholder with an explicit warning.
 - Recapture an older article from the Reader. If it has marks or a reading note, Kornu creates a new copy so those annotations stay attached to the original version.
 - Select words within one paragraph to highlight, underline, or attach a typed passage note. Notes appear with a wavy underline and a numbered margin marker.
@@ -29,7 +30,7 @@ Deploy from the Git repository so Netlify builds the `netlify/functions` code. U
 
 ## Current limits
 
-The web and iPad apps have separate stores and IDs. This is a browser prototype, not yet a shared account. Pencil ink, handwritten notes, fixed pages, and annotated PDF export remain native app work. Older web imports remain in their original plain-text format until recaptured. The article importer is a reader-copy extractor, not a pixel-perfect website archiver: embedded media, interactive layouts, paywalled pages, JavaScript-rendered pages, and sites that block automated requests may fail. Medium currently rejects some server requests with HTTP 403; Kornu reports that failure and keeps the original link rather than presenting a partial article as complete. It captures up to 30 supported images of at most 4 MB each. The hosted capture function checks the destination at connection time and has a per-client request limit. Review function usage and errors in Netlify after deployment. The local Node server still listens only on `127.0.0.1`.
+The web and iPad apps have separate stores and IDs. This is a browser prototype, not yet a shared account. Pencil ink, handwritten notes, fixed pages, and annotated PDF export remain native app work. Older web imports remain in their original plain-text format until recaptured. The article importer is a reader-copy extractor, not a pixel-perfect website archiver: embedded media, interactive layouts, paywalled pages, JavaScript-rendered pages, and sites that block automated requests may fail. Medium's public RSS feeds contain only recent stories, and paywalled stories are not available there in full; if a blocked story has no suitable feed entry, Kornu keeps its original link for review. It captures up to 30 supported images of at most 4 MB each. The hosted capture function checks the destination at connection time and has a per-client request limit. Review function usage and errors in Netlify after deployment. The local Node server still listens only on `127.0.0.1`.
 
 The article extraction layer uses [Mozilla Readability](https://github.com/mozilla/readability). Captured inline HTML is rebuilt from a small allowlist before it reaches the Reader.
 

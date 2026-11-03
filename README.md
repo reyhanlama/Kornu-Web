@@ -10,6 +10,12 @@ npm start
 
 Open `http://127.0.0.1:4173` in a browser. Node 20 or newer is required. Set `PORT` to use another port. The server binds to localhost by default. To test without running a hosted service, clone this repository and run the command above from its root.
 
+## Deploy on Netlify
+
+Connect this repository to a Netlify site and deploy the `main` branch. The checked-in `netlify.toml` sets the publish directory to `public`, runs the project checks, and bundles the article capture function. Keep the base directory at the repository root. Netlify installs the npm dependencies and uses Node 24 from `.nvmrc`.
+
+Deploy from the Git repository so Netlify builds the `netlify/functions` code. Uploading only the `public` folder makes the interface available but cannot provide article import. The app uses hash routes (`/#/library`, `/#/reader/...`), so it does not need a catch-all page rewrite. If a linked site still shows Netlify's 404 page, inspect the latest deploy's file explorer and confirm that `public/index.html` was published.
+
 ## Working now
 
 - Library, Inbox, Marks & Notes, and responsive article Reader.
@@ -23,7 +29,7 @@ Open `http://127.0.0.1:4173` in a browser. Node 20 or newer is required. Set `PO
 
 ## Current limits
 
-The web and iPad apps have separate stores and IDs. This is a browser prototype, not yet a hosted service or a shared account. Pencil ink, handwritten notes, fixed pages, and annotated PDF export remain native app work. Older web imports remain in their original plain-text format until recaptured. The article importer is a reader-copy extractor, not a pixel-perfect website archiver: embedded media, interactive layouts, paywalled pages, JavaScript-rendered pages, and sites that block automated requests may fail. Medium currently rejects some server requests with HTTP 403; Kornu reports that failure and keeps the original link rather than presenting a partial article as complete. It captures up to 30 supported images of at most 4 MB each. Before public deployment, the import service needs DNS pinning, rate limits, and operational monitoring. The server currently listens only on `127.0.0.1` deliberately; deploying it requires a production hosting configuration.
+The web and iPad apps have separate stores and IDs. This is a browser prototype, not yet a shared account. Pencil ink, handwritten notes, fixed pages, and annotated PDF export remain native app work. Older web imports remain in their original plain-text format until recaptured. The article importer is a reader-copy extractor, not a pixel-perfect website archiver: embedded media, interactive layouts, paywalled pages, JavaScript-rendered pages, and sites that block automated requests may fail. Medium currently rejects some server requests with HTTP 403; Kornu reports that failure and keeps the original link rather than presenting a partial article as complete. It captures up to 30 supported images of at most 4 MB each. The hosted capture function checks the destination at connection time and has a per-client request limit. Review function usage and errors in Netlify after deployment. The local Node server still listens only on `127.0.0.1`.
 
 The article extraction layer uses [Mozilla Readability](https://github.com/mozilla/readability). Captured inline HTML is rebuilt from a small allowlist before it reaches the Reader.
 

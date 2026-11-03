@@ -1,5 +1,8 @@
 import dns from 'node:dns/promises';
+import http from 'node:http';
+import https from 'node:https';
 import net from 'node:net';
+import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
 
@@ -201,38 +204,68 @@ export function extractArticle(html, urlString) {
   };
 }
 
+function publicLookup(host, options, callback) {
+  dns.lookup(host, { all: true }).then((addresses) => {
+    if (!addresses.length || addresses.some(({ address }) => privateAddress(address))) {
+      callback(new Error('This link cannot be imported.'));
+      return;
+    }
+    if (options.all) callback(null, addresses);
+    else callback(null, addresses[0].address, addresses[0].family);
+  }).catch(callback);
+}
+
+function requestRemote(url, acceptedType, limit) {
+  return new Promise((resolve, reject) => {
+    const transport = url.protocol === 'https:' ? https : http;
+    const request = transport.get(url, {
+      lookup: publicLookup,
+      signal: AbortSignal.timeout(20000),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; KornuReader/0.2)',
+        Accept: acceptedType === 'html' ? 'text/html,application/xhtml+xml' : 'image/avif,image/webp,image/png,image/jpeg,image/gif',
+        'Accept-Encoding': 'gzip, deflate, br'
+      }
+    }, async (response) => {
+      try {
+        if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
+          response.resume();
+          resolve({ redirect: response.headers.location });
+          return;
+        }
+        if (response.statusCode < 200 || response.statusCode >= 300) throw new Error(`The source returned ${response.statusCode}.`);
+        const mime = (response.headers['content-type'] || '').split(';')[0].toLowerCase();
+        if (acceptedType === 'html' && !['text/html', 'application/xhtml+xml'].includes(mime)) throw new Error('This link is not an HTML article.');
+        if (acceptedType === 'image' && !['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif'].includes(mime)) throw new Error('This asset is not a supported image.');
+        if (Number(response.headers['content-length']) > limit) throw new Error('The source is too large to capture.');
+        const encoding = response.headers['content-encoding'];
+        const decoder = { gzip: createGunzip, deflate: createInflate, br: createBrotliDecompress }[encoding];
+        if (encoding && encoding !== 'identity' && !decoder) throw new Error('This source uses unsupported compression.');
+        const stream = decoder ? response.pipe(decoder()) : response;
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of stream) {
+          size += chunk.length;
+          if (size > limit) throw new Error('The source is too large to capture.');
+          chunks.push(chunk);
+        }
+        resolve({ bytes: Buffer.concat(chunks), mime, url: url.href });
+      } catch (error) {
+        request.destroy();
+        reject(error);
+      }
+    });
+    request.on('error', reject);
+  });
+}
+
 async function fetchRemote(input, acceptedType, limit) {
   let url = await validatePublicURL(input);
   for (let redirects = 0; redirects < 4; redirects++) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20000);
-    try {
-      const response = await fetch(url, {
-        redirect: 'manual', signal: controller.signal,
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; KornuReader/0.2)', Accept: acceptedType === 'html' ? 'text/html,application/xhtml+xml' : 'image/avif,image/webp,image/png,image/jpeg,image/gif' }
-      });
-      if ([301, 302, 303, 307, 308].includes(response.status)) {
-        const location = response.headers.get('location');
-        if (!location) throw new Error('The article redirected without a destination.');
-        url = await validatePublicURL(new URL(location, url).href);
-        continue;
-      }
-      if (!response.ok) throw new Error(`The source returned ${response.status}.`);
-      const mime = (response.headers.get('content-type') || '').split(';')[0].toLowerCase();
-      if (acceptedType === 'html' && !['text/html', 'application/xhtml+xml'].includes(mime)) throw new Error('This link is not an HTML article.');
-      if (acceptedType === 'image' && !['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif'].includes(mime)) throw new Error('This asset is not a supported image.');
-      if (Number(response.headers.get('content-length')) > limit) throw new Error('The source is too large to capture.');
-      const chunks = [];
-      let size = 0;
-      for await (const chunk of response.body) {
-        size += chunk.byteLength;
-        if (size > limit) { await response.body.cancel().catch(() => {}); throw new Error('The source is too large to capture.'); }
-        chunks.push(chunk);
-      }
-      return { bytes: Buffer.concat(chunks), mime, url: url.href };
-    } finally {
-      clearTimeout(timeout);
-    }
+    const result = await requestRemote(url, acceptedType, limit);
+    if (!('redirect' in result)) return result;
+    if (!result.redirect) throw new Error('The article redirected without a destination.');
+    url = await validatePublicURL(new URL(result.redirect, url).href);
   }
   throw new Error('The source redirected too many times.');
 }

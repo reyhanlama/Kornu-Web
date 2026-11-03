@@ -59,7 +59,8 @@ function publicLink(raw, base) {
 
 function bestImageSource(image) {
   const srcset = image.getAttribute('data-srcset') || image.getAttribute('srcset');
-  const candidate = srcset?.split(',').at(-1)?.trim().split(/\s+/)[0];
+  const candidates = [...(srcset || '').matchAll(/(?:^|,\s*)(\S+)\s+\d+(?:\.\d+)?[wx](?=\s*(?:,|$))/g)];
+  const candidate = candidates.at(-1)?.[1];
   const source = image.getAttribute('data-src') || image.getAttribute('data-original') || candidate || image.getAttribute('src');
   return source && !source.startsWith('data:') ? source : null;
 }

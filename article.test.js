@@ -17,6 +17,14 @@ test('extracts readable text and a photo from an article while removing script c
   assert.deepEqual(article.images[0], { url: 'https://example.com/photo.jpg', caption: 'After the first passage', afterParagraph: 0 });
 });
 
+test('keeps commas inside responsive image URLs', () => {
+  const small = 'https://substackcdn.com/image/fetch/w_424,c_limit/https%3A%2F%2Fexample.com%2Fphoto.png';
+  const large = 'https://substackcdn.com/image/fetch/w_848,c_limit/https%3A%2F%2Fexample.com%2Fphoto.png';
+  const html = `<html><body><article><h1>A pictured essay</h1><p>${paragraphOne}</p><figure><img src="${small}" srcset="${small} 424w, ${large} 848w" alt="The picture"></figure><p>${paragraphTwo}</p><p>${paragraphThree}</p><p>${paragraphFour}</p></article></body></html>`;
+  const article = extractArticle(html, 'https://example.com/essay');
+  assert.equal(article.images[0].url, large);
+});
+
 test('preserves article structure and safe inline formatting', () => {
   const long = 'The reading copy should retain the structure of an article while giving every idea enough space for a careful response. ';
   const html = `<html><head><title>Structured article</title></head><body><article><h1>Structured article</h1><p>${long.repeat(3)}</p><h2>A second section</h2><p>Here is <strong>important language</strong> with <em>emphasis</em>, an <a href="https://example.com/source">original source</a>, and a <a href="javascript:alert(1)">bad link</a>.</p><ul><li>First point with enough detail to read carefully.</li><li>Second point that matters to the argument.</li></ul><blockquote><p>A quoted observation to return to later.</p></blockquote><table><tr><th>Item</th><th>Value</th></tr><tr><td>One</td><td>Two</td></tr></table><p>${long.repeat(3)}</p></article></body></html>`;

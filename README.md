@@ -13,14 +13,18 @@ Open `http://127.0.0.1:4173` in a browser. Node 20 or newer is required. Set `PO
 ## Working now
 
 - Library, Inbox, Marks & Notes, and responsive article Reader.
-- Paste a public article link. The small Node server extracts title, paragraphs, and available images, then reports import failures or suspected short Medium previews for review.
+- Paste a public article link. Mozilla Readability prepares a structured reading copy with headings, emphasis, links, lists, quotations, tables, image placement, and author information when available.
+- Kornu downloads supported article images through its local capture server and stores them with the reading in browser IndexedDB. A failed image appears as a placeholder with an explicit warning.
+- Recapture an older article from the Reader. If it has marks or a reading note, Kornu creates a new copy so those annotations stay attached to the original version.
 - Select words within one paragraph to highlight, underline, or attach a typed passage note. Notes appear with a wavy underline and a numbered margin marker.
 - Marks & Notes and the Reader rail jump to the relevant paragraph.
-- Reading level note, search, filters, reading progress, and JSON backup export.
-- Browser local storage persists readings and marks on this browser profile.
+- Reading level note, search, filters, reading progress, and a JSON backup that includes saved article snapshots and image data.
+- Browser local storage holds library metadata and marks; IndexedDB holds rich article snapshots and image files on this browser profile.
 
 ## Current limits
 
-The web and iPad apps have separate stores and IDs. This is a browser prototype, not yet a hosted service or a shared account. The browser can load it from a URL once deployed, but cross device handoff requires an authenticated shared backend and migration of existing iPad data. Pencil ink, handwritten notes, fixed pages, offline image caching, and annotated PDF export remain native app work. The article importer is an early extractor; paywalled, JavaScript rendered, and restrictive sites may fail. Before public deployment, the import service needs stronger DNS pinning, rate limits, and operational monitoring. The server currently listens only on `127.0.0.1` deliberately; deploying it requires a production hosting configuration.
+The web and iPad apps have separate stores and IDs. This is a browser prototype, not yet a hosted service or a shared account. Pencil ink, handwritten notes, fixed pages, and annotated PDF export remain native app work. Older web imports remain in their original plain-text format until recaptured. The article importer is a reader-copy extractor, not a pixel-perfect website archiver: embedded media, interactive layouts, paywalled pages, JavaScript-rendered pages, and sites that block automated requests may fail. Medium currently rejects some server requests with HTTP 403; Kornu reports that failure and keeps the original link rather than presenting a partial article as complete. It captures up to 30 supported images of at most 4 MB each. Before public deployment, the import service needs DNS pinning, rate limits, and operational monitoring. The server currently listens only on `127.0.0.1` deliberately; deploying it requires a production hosting configuration.
+
+The article extraction layer uses [Mozilla Readability](https://github.com/mozilla/readability). Captured inline HTML is rebuilt from a small allowlist before it reaches the Reader.
 
 The original sample reading text is bundled for review, and its editorial image was generated for the Kornu prototype.

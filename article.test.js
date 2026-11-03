@@ -17,6 +17,19 @@ test('extracts readable text and a photo from an article while removing script c
   assert.deepEqual(article.images[0], { url: 'https://example.com/photo.jpg', caption: 'After the first passage', afterParagraph: 0 });
 });
 
+test('preserves article structure and safe inline formatting', () => {
+  const long = 'The reading copy should retain the structure of an article while giving every idea enough space for a careful response. ';
+  const html = `<html><head><title>Structured article</title></head><body><article><h1>Structured article</h1><p>${long.repeat(3)}</p><h2>A second section</h2><p>Here is <strong>important language</strong> with <em>emphasis</em>, an <a href="https://example.com/source">original source</a>, and a <a href="javascript:alert(1)">bad link</a>.</p><ul><li>First point with enough detail to read carefully.</li><li>Second point that matters to the argument.</li></ul><blockquote><p>A quoted observation to return to later.</p></blockquote><table><tr><th>Item</th><th>Value</th></tr><tr><td>One</td><td>Two</td></tr></table><p>${long.repeat(3)}</p></article></body></html>`;
+  const article = extractArticle(html, 'https://example.com/structured');
+  assert.equal(article.title, 'Structured article');
+  assert.deepEqual(article.blocks.map((block) => block.kind), ['paragraph', 'heading', 'paragraph', 'list-item', 'list-item', 'quote', 'table', 'paragraph']);
+  assert.match(article.blocks[2].html, /<strong>important language<\/strong>/);
+  assert.match(article.blocks[2].html, /<em>emphasis<\/em>/);
+  assert.match(article.blocks[2].html, /href="https:\/\/example.com\/source"/);
+  assert.doesNotMatch(article.blocks[2].html, /javascript:/);
+  assert.equal(article.blocks[6].rows[1][1].text, 'Two');
+});
+
 test('rejects incomplete pages instead of presenting a misleading reading copy', () => {
   assert.throws(() => extractArticle('<html><body><p>Short preview.</p></body></html>', 'https://example.com/essay'), /not find enough article text/);
 });

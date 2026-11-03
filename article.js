@@ -1,7 +1,11 @@
 import dns from 'node:dns/promises';
 import net from 'node:net';
+import { Readability } from '@mozilla/readability';
+import { JSDOM } from 'jsdom';
 
-const MAX_BYTES = 5_000_000;
+const MAX_HTML_BYTES = 5_000_000;
+const MAX_IMAGE_BYTES = 4_000_000;
+const MAX_IMAGES = 30;
 
 function privateAddress(address) {
   if (net.isIP(address) === 4) {
@@ -37,100 +41,207 @@ export async function validatePublicURL(input) {
   return url;
 }
 
-const decodeEntities = (value) => value
-  .replace(/&#(x[0-9a-f]+|\d+);/gi, (_, raw) => {
-    const number = raw[0].toLowerCase() === 'x' ? parseInt(raw.slice(1), 16) : Number(raw);
-    return Number.isFinite(number) && number >= 0 && number <= 0x10ffff ? String.fromCodePoint(number) : '';
-  })
-  .replace(/&(?:nbsp|amp|quot|apos|lt|gt|ldquo|rdquo|lsquo|rsquo|mdash|ndash|hellip);/gi, (entity) => ({
-    '&nbsp;': ' ', '&amp;': '&', '&quot;': '"', '&apos;': "'", '&lt;': '<', '&gt;': '>',
-    '&ldquo;': '“', '&rdquo;': '”', '&lsquo;': '‘', '&rsquo;': '’', '&mdash;': '—',
-    '&ndash;': '–', '&hellip;': '…'
-  })[entity.toLowerCase()] ?? entity);
+const escapeHTML = (value = '') => String(value).replace(/[&<>"']/g, (char) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+})[char]);
 
-function plain(value) {
-  return decodeEntities(value.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').replace(/\s+([,.;:!?])/g, '$1').trim();
+function publicLink(raw, base) {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  try {
+    const url = new URL(raw, base);
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : null;
+  } catch { return null; }
 }
 
-function first(html, pattern) { return html.match(pattern)?.[1] ?? ''; }
-function attr(tag, name) { return first(tag, new RegExp(`\\b${name}\\s*=\\s*["']([^"']*)["']`, 'i')); }
-function meta(html, key) {
-  for (const tag of html.match(/<meta\b[^>]*>/gi) ?? []) {
-    if ((attr(tag, 'property') || attr(tag, 'name')).toLowerCase() === key) return plain(attr(tag, 'content'));
+function bestImageSource(image) {
+  const srcset = image.getAttribute('data-srcset') || image.getAttribute('srcset');
+  const candidate = srcset?.split(',').at(-1)?.trim().split(/\s+/)[0];
+  const source = image.getAttribute('data-src') || image.getAttribute('data-original') || candidate || image.getAttribute('src');
+  return source && !source.startsWith('data:') ? source : null;
+}
+
+function prepareImages(document, base) {
+  for (const image of document.querySelectorAll('img')) {
+    const source = bestImageSource(image);
+    const url = source && publicLink(source, base);
+    if (url) image.setAttribute('src', url);
+    image.removeAttribute('srcset');
+    image.removeAttribute('data-srcset');
   }
-  return '';
+}
+
+function trimSourceFurniture(document, url) {
+  if (!url.hostname.endsWith('wikipedia.org')) return;
+  document.querySelectorAll('sup.reference, .mw-editsection, .noprint, ol.references, .mw-references-wrap').forEach((node) => node.remove());
+  const article = document.querySelector('.mw-parser-output');
+  if (!article) return;
+  const heading = article.querySelector('h2#See_also, h2#References, h2#Further_reading, h2#External_links');
+  const section = heading?.closest('section');
+  const cutoff = section?.parentElement === article ? section : heading?.parentElement?.parentElement === article ? heading.parentElement : null;
+  for (let node = cutoff; node;) {
+    const next = node.nextElementSibling;
+    node.remove();
+    node = next;
+  }
+}
+
+function inline(node, base) {
+  if (node.nodeType === 3) return escapeHTML(node.nodeValue.replace(/\s+/g, ' '));
+  if (node.nodeType !== 1) return '';
+  const tag = node.localName.toLowerCase();
+  if (tag === 'br') return ' ';
+  if (['img', 'picture', 'svg', 'script', 'style', 'iframe', 'button', 'input'].includes(tag)) return '';
+  const children = [...node.childNodes].map((child) => inline(child, base)).join('');
+  if (tag === 'a') {
+    const href = publicLink(node.getAttribute('href'), base);
+    return href ? `<a href="${escapeHTML(href)}" target="_blank" rel="noopener noreferrer">${children}</a>` : children;
+  }
+  const mapped = { b: 'strong', strong: 'strong', i: 'em', em: 'em', code: 'code', sub: 'sub', sup: 'sup', s: 's', del: 's' }[tag];
+  return mapped ? `<${mapped}>${children}</${mapped}>` : children;
+}
+
+function inlineChildren(element, base) {
+  return [...element.childNodes].map((child) => inline(child, base)).join('');
 }
 
 export function extractArticle(html, urlString) {
   const url = new URL(urlString);
+  const document = new JSDOM(html, { url: url.href }).window.document;
+  const pageHeading = document.querySelector('article h1, main h1, h1')?.textContent.replace(/\s+/g, ' ').trim() || '';
+  const description = document.querySelector('meta[name="description"], meta[property="og:description"]')?.getAttribute('content')?.trim() || '';
+  trimSourceFurniture(document, url);
+  prepareImages(document, url.href);
+  const readable = new Readability(document, { charThreshold: 200, keepClasses: false }).parse();
+  if (!readable?.content) throw new Error('Kornu could not find a readable article on this page. Open the original instead.');
   const source = url.hostname.replace(/^www\./, '');
-  const sections = [...html.matchAll(/<(article|main)\b[^>]*>([\s\S]*?)<\/\1>/gi)]
-    .map((match) => match[2]).sort((a, b) => b.length - a.length);
-  let content = sections[0] || first(html, /<body\b[^>]*>([\s\S]*?)<\/body>/i) || html;
-  const title = plain(first(content, /<h1\b[^>]*>([\s\S]*?)<\/h1>/i) ||
-    meta(html, 'og:title') || first(html, /<title\b[^>]*>([\s\S]*?)<\/title>/i) || source);
-  const subtitle = meta(html, 'description') || meta(html, 'og:description');
-  content = content.replace(/<(script|style|nav|header|footer|aside|form|noscript|svg)\b[^>]*>[\s\S]*?<\/\1>/gi, '');
-  if (source.includes('wikipedia.org')) content = content.replace(/<sup\b[^>]*>[\s\S]*?<\/sup>/gi, '');
+  const title = readable.title?.trim() && readable.title.trim() !== source ? readable.title.trim() : pageHeading || readable.title?.trim() || source;
+  const body = new JSDOM(`<article>${readable.content}</article>`, { url: url.href }).window.document;
+  const root = body.querySelector('article');
+  const blocks = [];
   const paragraphs = [];
-  const images = [];
-  const seen = new Set();
-  for (const match of content.matchAll(/<figure\b[^>]*>[\s\S]*?<\/figure>|<p\b[^>]*>[\s\S]*?<\/p>|<img\b[^>]*>/gi)) {
-    const block = match[0];
-    if (/^<p\b/i.test(block)) {
-      const text = plain(block);
-      if (text.length >= 40) paragraphs.push(text);
-      continue;
-    }
-    const tag = block.match(/<img\b[^>]*>/i)?.[0];
-    if (!tag) continue;
-    const srcset = attr(tag, 'data-srcset') || attr(tag, 'srcset');
-    const raw = (srcset?.split(',').at(-1)?.trim().split(/\s+/)[0]) || attr(tag, 'data-src') || attr(tag, 'src');
-    if (!raw || raw.startsWith('data:') || (Number(attr(tag, 'width')) > 0 && Number(attr(tag, 'width')) < 160)) continue;
-    let imageURL;
-    try { imageURL = new URL(decodeEntities(raw), url); } catch { continue; }
-    if (!['http:', 'https:'].includes(imageURL.protocol) || /\.(svg)(?:\?|$)/i.test(imageURL.pathname) ||
-        /avatar|logo|icon|pixel|tracking|padlock/i.test(imageURL.href) || seen.has(imageURL.href)) continue;
-    seen.add(imageURL.href);
-    images.push({ url: imageURL.href, caption: plain(first(block, /<figcaption\b[^>]*>([\s\S]*?)<\/figcaption>/i) || attr(tag, 'alt')), afterParagraph: paragraphs.length - 1 });
+  let imageCount = 0;
+  let omittedImages = 0;
+
+  function addText(kind, element, extra = {}) {
+    const content = kind === 'code' ? escapeHTML(element.textContent || '') : inlineChildren(element, url.href);
+    const text = kind === 'code' ? element.textContent || '' : JSDOM.fragment(content).textContent || '';
+    if (text.trim().length < (kind === 'paragraph' ? 14 : 2)) return;
+    const index = paragraphs.length;
+    paragraphs.push(text);
+    blocks.push({ kind, index, html: content, ...extra });
   }
-  if (paragraphs.length < 2 || paragraphs.join('').length < 280) {
+
+  function addImage(image, caption = '') {
+    const width = Number(image.getAttribute('width'));
+    const height = Number(image.getAttribute('height'));
+    if ((width > 0 && width < 160) || (height > 0 && height < 100)) return;
+    const src = publicLink(bestImageSource(image), url.href);
+    if (!src || /\.(svg)(?:\?|$)/i.test(src) || /avatar|logo|icon|pixel|tracking|padlock/i.test(src)) return;
+    if (imageCount >= MAX_IMAGES) { omittedImages++; return; }
+    blocks.push({ kind: 'image', url: src, caption: caption.trim() || image.getAttribute('alt')?.trim() || '', afterParagraph: paragraphs.length - 1 });
+    imageCount++;
+  }
+
+  function visit(node) {
+    if (node.nodeType !== 1) return;
+    const tag = node.localName.toLowerCase();
+    if (['script', 'style', 'nav', 'aside', 'form', 'iframe', 'noscript'].includes(tag)) return;
+    if (/^h[2-6]$/.test(tag)) {
+      if (node.textContent.replace(/\s+/g, ' ').trim() !== title) addText('heading', node, { level: Number(tag[1]) });
+      return;
+    }
+    if (tag === 'p') {
+      addText('paragraph', node);
+      for (const image of node.querySelectorAll('img')) addImage(image);
+      return;
+    }
+    if (tag === 'figure') {
+      const caption = node.querySelector('figcaption')?.textContent.replace(/\s+/g, ' ').trim() || '';
+      for (const image of node.querySelectorAll('img')) addImage(image, caption);
+      return;
+    }
+    if (tag === 'img') { addImage(node); return; }
+    if (tag === 'blockquote') {
+      const parts = [...node.querySelectorAll('p')];
+      if (parts.length) parts.forEach((part) => addText('quote', part));
+      else addText('quote', node);
+      return;
+    }
+    if (tag === 'ul' || tag === 'ol') {
+      let number = Number(node.getAttribute('start')) || 1;
+      for (const child of node.children) {
+        if (child.localName === 'li') addText('list-item', child, { ordered: tag === 'ol', number: number++ });
+      }
+      return;
+    }
+    if (tag === 'pre') { addText('code', node); return; }
+    if (tag === 'table') {
+      const rows = [...node.querySelectorAll('tr')].slice(0, 80).map((row) => [...row.querySelectorAll('th,td')].slice(0, 16).map((cell) => ({ text: cell.textContent.replace(/\s+/g, ' ').trim(), heading: cell.localName === 'th' })));
+      if (rows.some((row) => row.length)) blocks.push({ kind: 'table', rows, caption: node.querySelector('caption')?.textContent.trim() || '' });
+      return;
+    }
+    if (tag === 'hr') { blocks.push({ kind: 'rule' }); return; }
+    for (const child of node.children) visit(child);
+  }
+
+  for (const child of root.children) visit(child);
+  const text = paragraphs.join(' ');
+  if (paragraphs.length < 2 || text.trim().length < 280) {
     throw new Error('Kornu could not find enough article text on this page. Open the original instead.');
   }
-  const words = paragraphs.join(' ').split(/\s+/).length;
-  const warning = source.includes('medium.com') && words < 700 && /(?:…|\.\.\.)$/.test(paragraphs.at(-1))
-    ? 'Only an opening preview was available. Open the original story for the rest.' : null;
-  return { title, source, subtitle, paragraphs, images: images.slice(0, 24), warning, url: url.href };
+  const wordCount = text.trim().split(/\s+/).length;
+  const warnings = [];
+  if (source.includes('medium.com') && wordCount < 700 && /(?:…|\.\.\.)\s*$/.test(text)) warnings.push('Only an opening preview was available. Open the original story for the rest.');
+  if (omittedImages) warnings.push(`${omittedImages} images were beyond the current capture limit.`);
+  const images = blocks.filter((block) => block.kind === 'image').map(({ url: imageURL, caption, afterParagraph }) => ({ url: imageURL, caption, afterParagraph }));
+  return {
+    title, source, subtitle: description || (readable.excerpt && !text.trim().startsWith(readable.excerpt.trim()) ? readable.excerpt.trim() : ''),
+    byline: readable.byline?.trim() || '', siteName: readable.siteName?.trim() || source,
+    paragraphs, blocks, images, wordCount, warning: warnings.join(' ') || null, url: url.href
+  };
 }
 
-export async function importArticle(input) {
+async function fetchRemote(input, acceptedType, limit) {
   let url = await validatePublicURL(input);
   for (let redirects = 0; redirects < 4; redirects++) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20000);
-    let response;
     try {
-      response = await fetch(url, {
+      const response = await fetch(url, {
         redirect: 'manual', signal: controller.signal,
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; KornuReader/0.1)', Accept: 'text/html,application/xhtml+xml' }
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; KornuReader/0.2)', Accept: acceptedType === 'html' ? 'text/html,application/xhtml+xml' : 'image/avif,image/webp,image/png,image/jpeg,image/gif' }
       });
-    } finally { clearTimeout(timeout); }
-    if ([301, 302, 303, 307, 308].includes(response.status)) {
-      const location = response.headers.get('location');
-      if (!location) throw new Error('The article redirected without a destination.');
-      url = await validatePublicURL(new URL(location, url).href);
-      continue;
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get('location');
+        if (!location) throw new Error('The article redirected without a destination.');
+        url = await validatePublicURL(new URL(location, url).href);
+        continue;
+      }
+      if (!response.ok) throw new Error(`The source returned ${response.status}.`);
+      const mime = (response.headers.get('content-type') || '').split(';')[0].toLowerCase();
+      if (acceptedType === 'html' && !['text/html', 'application/xhtml+xml'].includes(mime)) throw new Error('This link is not an HTML article.');
+      if (acceptedType === 'image' && !['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif'].includes(mime)) throw new Error('This asset is not a supported image.');
+      if (Number(response.headers.get('content-length')) > limit) throw new Error('The source is too large to capture.');
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of response.body) {
+        size += chunk.byteLength;
+        if (size > limit) { await response.body.cancel().catch(() => {}); throw new Error('The source is too large to capture.'); }
+        chunks.push(chunk);
+      }
+      return { bytes: Buffer.concat(chunks), mime, url: url.href };
+    } finally {
+      clearTimeout(timeout);
     }
-    if (!response.ok) throw new Error(`The page returned ${response.status}.`);
-    if (!/html/i.test(response.headers.get('content-type') || '')) throw new Error('This link is not an HTML article.');
-    const chunks = [];
-    let size = 0;
-    for await (const chunk of response.body) {
-      size += chunk.byteLength;
-      if (size > MAX_BYTES) { await response.body.cancel().catch(() => {}); throw new Error('This page is too large to import.'); }
-      chunks.push(chunk);
-    }
-    return extractArticle(Buffer.concat(chunks).toString('utf8'), url.href);
   }
-  throw new Error('The article redirected too many times.');
+  throw new Error('The source redirected too many times.');
+}
+
+export async function importArticle(input) {
+  const result = await fetchRemote(input, 'html', MAX_HTML_BYTES);
+  return extractArticle(result.bytes.toString('utf8'), result.url);
+}
+
+export async function importImage(input) {
+  return fetchRemote(input, 'image', MAX_IMAGE_BYTES);
 }

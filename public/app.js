@@ -1,3 +1,5 @@
+import { putSnapshot, getSnapshot, putAsset, getAsset, getAllSnapshots, getAllAssets } from './storage.js';
+
 const STORE_KEY = 'kornu.web.v1';
 const markNames = { highlight: 'Highlight', underline: 'Underline', note: 'Note' };
 const sampleReadings = [
@@ -43,16 +45,24 @@ let selection = null;
 let toastTimer;
 let progressTimer;
 let lastRenderedReader = null;
+const loadingSnapshots = new Set();
+const assetURLs = new Map();
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const esc = (value = '') => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
-const save = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch { notify('Browser storage is full. Export a backup from the menu.'); } };
+const compactStore = () => ({ ...store, readings: store.readings.map((item) => {
+  if (!item.snapshotStored) return item;
+  const { blocks, paragraphs, images, ...metadata } = item;
+  return metadata;
+}) });
+const save = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify(compactStore())); } catch { notify('Browser storage is full. Export a backup from the menu.'); } };
 const uid = () => crypto.randomUUID();
 const reading = () => store.readings.find((item) => item.id === readerID);
 const marksFor = (id) => store.marks.filter((mark) => mark.readingID === id).sort((a, b) => a.paragraphIndex - b.paragraphIndex || a.start - b.start);
-const wordCount = (item) => item.paragraphs?.join(' ').trim().split(/\s+/).length || 0;
+const wordCount = (item) => item.wordCount || item.paragraphs?.join(' ').trim().split(/\s+/).length || 0;
 const minutes = (item) => Math.max(1, Math.ceil(wordCount(item) / 220));
 const day = (value) => new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(value));
+const featureSource = (item) => item.coverAssetKey ? assetURLs.get(item.coverAssetKey) || '/editorial.png' : item.images?.[0]?.url || '/editorial.png';
 const notify = (message) => {
   const toast = $('#toast'); toast.textContent = message; toast.classList.add('visible');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('visible'), 3200);
@@ -116,7 +126,7 @@ function libraryView() {
   const featured = ready.find((item) => store.progress[item.id] > 0 && store.progress[item.id] < 100)
     || ready.find((item) => item.images?.some((image) => image.url === '/editorial.png')) || ready[0];
   const intro = `<div class="page-heading"><div><div class="eyebrow">YOUR READING SPACE</div><h1>Library<span class="heading-dot">.</span></h1><p>${ready.length} reading${ready.length === 1 ? '' : 's'} saved for later.</p></div>${searchBar()}</div>`;
-  const feature = !search && filter === 'all' && featured ? `<section class="feature"><img class="feature-image" src="${esc(featured.images?.[0]?.url || '/editorial.png')}" alt="" referrerpolicy="no-referrer"><div class="feature-shade"></div><div class="feature-content"><span class="feature-label">${(store.progress[featured.id] || 0) > 0 ? 'CONTINUE READING' : 'START HERE'}</span><h2>${esc(featured.title)}</h2><p>${esc(featured.subtitle)}</p><button class="light-button" data-open="${esc(featured.id)}">Open reading ${icon('arrow', 17)}</button></div><span class="feature-number">01 / ${String(ready.length).padStart(2, '0')}</span></section>` : '';
+  const feature = !search && filter === 'all' && featured ? `<section class="feature"><img class="feature-image" src="${esc(featureSource(featured))}" alt=""><div class="feature-shade"></div><div class="feature-content"><span class="feature-label">${(store.progress[featured.id] || 0) > 0 ? 'CONTINUE READING' : 'START HERE'}</span><h2>${esc(featured.title)}</h2><p>${esc(featured.subtitle)}</p><button class="light-button" data-open="${esc(featured.id)}">Open reading ${icon('arrow', 17)}</button></div><span class="feature-number">01 / ${String(ready.length).padStart(2, '0')}</span></section>` : '';
   const filters = [['all', 'All'], ['unread', 'Unread'], ['reading', 'In progress'], ['finished', 'Finished']].map(([key, label]) => `<button class="filter ${filter === key ? 'selected' : ''}" data-filter="${key}">${label}</button>`).join('');
   const list = filtered.length ? filtered.map(readingRow).join('') : `<div class="empty"><strong>Nothing here yet.</strong><p>${search ? 'Try another search.' : 'Add a link or choose another filter.'}</p></div>`;
   return shell(`<div class="content-wrap">${intro}${feature}<section class="list-section"><div class="section-heading"><h2>All readings</h2><div class="filters">${filters}</div></div><div class="reading-list">${list}</div></section></div>`, 'Library');
@@ -148,18 +158,36 @@ function noteNumber(mark) {
   return marksFor(mark.readingID).filter((item) => item.kind === 'note').findIndex((item) => item.id === mark.id) + 1;
 }
 
-function markedText(item, paragraph, index) {
+function markedText(item, paragraph, index, richHTML = null) {
   const marks = marksFor(item.id).filter((mark) => mark.paragraphIndex === index && mark.start >= 0 && mark.end <= paragraph.length && mark.start < mark.end);
-  if (!marks.length) return esc(paragraph);
-  const boundaries = [...new Set([0, paragraph.length, ...marks.flatMap((mark) => [mark.start, mark.end])])].sort((a, b) => a - b);
-  let html = '';
-  for (let i = 0; i < boundaries.length - 1; i++) {
-    const from = boundaries[i], to = boundaries[i + 1];
-    const active = marks.filter((mark) => mark.start <= from && mark.end >= to);
-    const classes = ['text-segment', ...new Set(active.map((mark) => `mark-${mark.kind}`))].join(' ');
-    html += active.length ? `<span class="${classes}">${esc(paragraph.slice(from, to))}</span>` : esc(paragraph.slice(from, to));
+  const original = richHTML || esc(paragraph);
+  if (!marks.length) return original;
+  const template = document.createElement('template');
+  template.innerHTML = original;
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  let cursor = 0;
+  for (const node of nodes) {
+    const start = cursor, end = start + node.textContent.length;
+    cursor = end;
+    const points = [...new Set([start, end, ...marks.flatMap((mark) => [mark.start, mark.end]).filter((point) => point > start && point < end)])].sort((a, b) => a - b);
+    const fragment = document.createDocumentFragment();
+    for (let i = 0; i < points.length - 1; i++) {
+      const from = points[i], to = points[i + 1];
+      const piece = node.textContent.slice(from - start, to - start);
+      const active = marks.filter((mark) => mark.start <= from && mark.end >= to);
+      if (!active.length) fragment.append(document.createTextNode(piece));
+      else {
+        const span = document.createElement('span');
+        span.className = ['text-segment', ...new Set(active.map((mark) => `mark-${mark.kind}`))].join(' ');
+        span.textContent = piece;
+        fragment.append(span);
+      }
+    }
+    node.replaceWith(fragment);
   }
-  return html;
+  return template.innerHTML;
 }
 
 function articleParagraph(item, text, index) {
@@ -168,17 +196,38 @@ function articleParagraph(item, text, index) {
   return `<div class="paragraph-wrap" data-paragraph="${index}"><p class="article-paragraph">${markedText(item, text, index)}</p>${notes.map((mark) => `<button class="note-marker" data-edit-note="${esc(mark.id)}" aria-label="Open note ${noteNumber(mark)}">${noteNumber(mark)}</button>`).join('')}</div>${figures}`;
 }
 
+function articleBlock(item, block) {
+  if (block.kind === 'rule') return '<hr class="body-rule">';
+  if (block.kind === 'image') {
+    const saved = block.assetKey && assetURLs.get(block.assetKey);
+    return `<figure class="article-figure">${saved ? `<img src="${esc(saved)}" alt="${esc(block.caption || '')}" loading="lazy">` : '<div class="image-unavailable">This image could not be saved.</div>'}<figcaption>${esc(block.caption || '')}</figcaption></figure>`;
+  }
+  if (block.kind === 'table') {
+    return `<div class="article-table-scroll"><table>${block.rows.map((row) => `<tr>${row.map((cell) => `<${cell.heading ? 'th' : 'td'}>${esc(cell.text)}</${cell.heading ? 'th' : 'td'}>`).join('')}</tr>`).join('')}</table>${block.caption ? `<div class="table-caption">${esc(block.caption)}</div>` : ''}</div>`;
+  }
+  const index = block.index;
+  const paragraph = item.paragraphs[index] || '';
+  const notes = marksFor(item.id).filter((mark) => mark.kind === 'note' && mark.paragraphIndex === index);
+  const tag = block.kind === 'heading' ? (block.level <= 2 ? 'h2' : 'h3') : block.kind === 'quote' ? 'blockquote' : block.kind === 'code' ? 'pre' : 'p';
+  const typeClass = `body-${block.kind}`;
+  const listPrefix = block.kind === 'list-item' ? `<span class="list-prefix" aria-hidden="true">${block.ordered ? `${Number(block.number) || 1}.` : '•'}</span>` : '';
+  return `<div class="paragraph-wrap ${typeClass}" data-paragraph="${index}">${listPrefix}<${tag} class="article-paragraph">${markedText(item, paragraph, index, block.html)}</${tag}>${notes.map((mark) => `<button class="note-marker" data-edit-note="${esc(mark.id)}" aria-label="Open note ${noteNumber(mark)}">${noteNumber(mark)}</button>`).join('')}</div>`;
+}
+
 function readerView() {
   const item = reading();
   if (!item) return libraryView();
   if (item.status !== 'ready') {
     return shell(`<div class="content-wrap"><div class="reader-back"><button class="back-button" data-route="inbox">${icon('back', 16)} Back to Inbox</button></div><div class="review-screen"><div class="eyebrow">NEEDS REVIEW</div><h1>${esc(item.title)}</h1><p>${esc(item.issue || 'Kornu could not prepare this link.')}</p><div class="review-actions"><button class="primary-button" data-retry="${esc(item.id)}">Try again</button><a class="outline-button" href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">Open original ${icon('external', 16)}</a></div></div></div>`, 'Review', 'Inbox');
   }
+  if (item.snapshotStored && !item.blocks) {
+    return shell('<div class="content-wrap"><div class="review-screen"><div class="eyebrow">OPENING READING</div><h1>Preparing your copy.</h1><p>Loading the article and its saved images from this browser.</p></div></div>', item.title, 'Library');
+  }
   const itemMarks = marksFor(item.id);
   const count = itemMarks.length;
   const articleNote = store.articleNotes[item.id] || '';
-  return shell(`<div class="reader-layout"><div class="reader-main"><div class="reader-toolbar"><button class="back-button" data-route="library">${icon('back', 17)} Library</button><div class="reader-toolbar-right"><span class="read-time">${minutes(item)} min read</span><a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer" class="plain-button">Original ${icon('external', 15)}</a><button class="plain-button" data-action="toggle-marks">${icon('mark', 16)} Marks <span class="toolbar-count">${count}</span></button></div></div>
-    <article class="paper" id="reading-paper"><div class="article-overline">${esc(item.source)} <span>·</span> SAVED ${day(item.savedAt).toUpperCase()}</div><h1>${esc(item.title)}</h1>${item.subtitle ? `<p class="article-deck">${esc(item.subtitle)}</p>` : ''}<div class="article-rule"></div><div class="article-body">${item.paragraphs.map((paragraph, index) => articleParagraph(item, paragraph, index)).join('')}</div><div class="article-end"><span class="end-mark">✳</span><p>You reached the end of this reading.</p><button class="text-link" data-action="finish">Mark as finished ${icon('check', 15)}</button></div></article></div>
+  return shell(`<div class="reader-layout"><div class="reader-main"><div class="reader-toolbar"><button class="back-button" data-route="library">${icon('back', 17)} Library</button><div class="reader-toolbar-right"><span class="read-time">${minutes(item)} min read</span>${item.source !== 'Kornu sample' ? `<button class="plain-button recapture-button" data-retry="${esc(item.id)}" title="Capture this article again">${icon('download', 15)}<span>Recapture</span></button>` : ''}<a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer" class="plain-button">Original ${icon('external', 15)}</a><button class="plain-button" data-action="toggle-marks">${icon('mark', 16)} Marks <span class="toolbar-count">${count}</span></button></div></div>
+    <article class="paper" id="reading-paper"><div class="article-overline">${esc(item.source)} <span>·</span> SAVED ${day(item.savedAt).toUpperCase()}</div><h1>${esc(item.title)}</h1>${item.byline ? `<div class="article-byline">By ${esc(item.byline)}</div>` : ''}${item.subtitle ? `<p class="article-deck">${esc(item.subtitle)}</p>` : ''}${item.issue ? `<div class="capture-notice">${esc(item.issue)}</div>` : ''}<div class="article-rule"></div><div class="article-body">${item.blocks ? item.blocks.map((block) => articleBlock(item, block)).join('') : item.paragraphs.map((paragraph, index) => articleParagraph(item, paragraph, index)).join('')}</div><div class="article-end"><span class="end-mark">✳</span><p>You reached the end of this reading.</p><button class="text-link" data-action="finish">Mark as finished ${icon('check', 15)}</button></div></article></div>
     <aside class="reader-aside ${showReaderMarks ? '' : 'reader-aside-hidden'}"><div class="aside-inner"><div class="aside-heading"><span class="overline">THIS READING</span><button class="aside-close" data-action="toggle-marks" aria-label="Close marks">${icon('close', 16)}</button></div><h2>Room for thought.</h2><p class="aside-subtitle">Select a passage to highlight, underline, or leave a note.</p><div class="aside-divider"></div><div class="aside-section-heading"><strong>Your marks</strong><span>${count}</span></div>
       ${itemMarks.length ? itemMarks.map((mark) => `<button class="aside-mark" data-jump="${esc(mark.id)}"><span class="aside-mark-type">${mark.kind === 'note' ? `NOTE ${noteNumber(mark)}` : esc(markNames[mark.kind]).toUpperCase()}</span><span>“${esc(mark.quote)}”</span>${mark.note ? `<em>${esc(mark.note)}</em>` : ''}</button>`).join('') : '<div class="aside-empty">Your first mark will appear here.</div>'}
       <div class="aside-divider"></div><button class="article-note-button" data-action="article-note"><span class="overline">READING NOTE</span><span>${articleNote ? esc(articleNote) : 'Why did you save this? Add a thought.'}</span>${icon('arrow', 16)}</button>
@@ -207,9 +256,37 @@ function positionMarkers() {
   }
 }
 
+async function hydrateReading(id) {
+  if (loadingSnapshots.has(id)) return;
+  loadingSnapshots.add(id);
+  const item = store.readings.find((entry) => entry.id === id);
+  try {
+    const snapshot = await getSnapshot(id);
+    if (!snapshot) throw new Error('The saved reading copy is missing from this browser.');
+    item.paragraphs = snapshot.paragraphs;
+    item.blocks = snapshot.blocks;
+    item.images = snapshot.images;
+    const keys = [...new Set(snapshot.blocks.map((block) => block.assetKey).filter(Boolean))];
+    await Promise.all(keys.map(async (key) => {
+      if (assetURLs.has(key)) return;
+      const blob = await getAsset(key);
+      if (blob) assetURLs.set(key, URL.createObjectURL(blob));
+    }));
+  } catch (error) {
+    item.status = 'needsReview';
+    item.issue = error.message || 'The saved copy could not be opened.';
+    save();
+  } finally {
+    loadingSnapshots.delete(id);
+    if (view === 'reader' && readerID === id) render();
+  }
+}
+
 function render() {
   const sameReader = view === 'reader' && lastRenderedReader === readerID && Boolean($('#reading-paper'));
   const previousScroll = sameReader ? window.scrollY : null;
+  const item = reading();
+  if (view === 'reader' && item?.status === 'ready' && item.snapshotStored && !item.blocks && !loadingSnapshots.has(item.id)) hydrateReading(item.id);
   if (view === 'reader') $('#app').innerHTML = readerView();
   else if (view === 'inbox') $('#app').innerHTML = inboxView();
   else if (view === 'marks') $('#app').innerHTML = marksView();
@@ -294,6 +371,10 @@ function addMark(kind) {
 }
 
 async function importLink(url, existingID = null) {
+  if (existingID && (marksFor(existingID).length || store.articleNotes[existingID])) {
+    existingID = null;
+    notify('Making a new copy so your existing marks stay in place.');
+  }
   let item = existingID ? store.readings.find((entry) => entry.id === existingID) : null;
   if (!item) {
     item = { id: uid(), title: 'New reading', source: new URL(url).hostname.replace(/^www\./, ''), subtitle: '', url, status: 'preparing', issue: '', savedAt: new Date().toISOString(), paragraphs: [], images: [] };
@@ -304,16 +385,68 @@ async function importLink(url, existingID = null) {
     const response = await fetch('/api/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Import failed.');
-    Object.assign(item, data, { status: data.warning ? 'needsReview' : 'ready', issue: data.warning || '' });
-    notify(data.warning ? 'Only a preview was found.' : 'Reading added to your library.');
+    const blocks = data.blocks || [];
+    const pictures = blocks.filter((block) => block.kind === 'image');
+    let cursor = 0, failed = 0, coverAssetKey = null;
+    async function worker() {
+      while (cursor < pictures.length) {
+        const index = cursor++;
+        const picture = pictures[index];
+        const key = `${item.id}:image:${index}`;
+        try {
+          const assetResponse = await fetch('/api/asset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: picture.url }) });
+          if (!assetResponse.ok) throw new Error('Image unavailable.');
+          const blob = await assetResponse.blob();
+          await putAsset(key, blob);
+          picture.assetKey = key;
+          assetURLs.set(key, URL.createObjectURL(blob));
+          if (!coverAssetKey) coverAssetKey = key;
+        } catch { failed++; }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(3, pictures.length) }, worker));
+    await putSnapshot(item.id, { id: item.id, paragraphs: data.paragraphs, blocks, images: data.images, wordCount: data.wordCount });
+    const issue = [data.warning, failed ? `${failed} image${failed === 1 ? '' : 's'} could not be saved for offline reading.` : ''].filter(Boolean).join(' ');
+    Object.assign(item, {
+      title: data.title, source: data.source, subtitle: data.subtitle, byline: data.byline,
+      url: data.url, paragraphs: data.paragraphs, blocks, images: data.images,
+      wordCount: data.wordCount, snapshotStored: true, coverAssetKey,
+      status: data.warning?.startsWith('Only an opening preview') ? 'needsReview' : 'ready', issue
+    });
+    notify(item.status === 'ready' ? `Reading saved${pictures.length ? ` with ${pictures.length - failed} images` : ''}.` : 'Only a preview was found.');
   } catch (error) { item.status = 'needsReview'; item.issue = error.message || 'Import failed.'; notify('This link needs review.'); }
   save(); render();
 }
 
-function backup() {
-  const blob = new Blob([JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), ...store }, null, 2)], { type: 'application/json' });
-  const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `kornu-backup-${new Date().toISOString().slice(0, 10)}.json`; link.click();
-  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+async function backup() {
+  notify('Preparing your browser backup…');
+  try {
+    const [snapshots, storedAssets] = await Promise.all([getAllSnapshots(), getAllAssets()]);
+    const assets = await Promise.all(storedAssets.map(({ key, blob }) => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve({ key, data: reader.result });
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    })));
+    const archive = { version: 2, exportedAt: new Date().toISOString(), ...compactStore(), snapshots, assets };
+    const blob = new Blob([JSON.stringify(archive)], { type: 'application/json' });
+    const link = document.createElement('a'); link.href = URL.createObjectURL(blob);
+    link.download = `kornu-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    notify('Backup downloaded.');
+  } catch { notify('The backup could not be prepared.'); }
+}
+
+async function preloadCovers() {
+  const keys = [...new Set(store.readings.map((item) => item.coverAssetKey).filter(Boolean))];
+  if (!keys.length) return;
+  await Promise.all(keys.map(async (key) => {
+    if (assetURLs.has(key)) return;
+    const blob = await getAsset(key).catch(() => null);
+    if (blob) assetURLs.set(key, URL.createObjectURL(blob));
+  }));
+  if (view === 'library') render();
 }
 
 document.addEventListener('click', (event) => {
@@ -329,7 +462,7 @@ document.addEventListener('click', (event) => {
   if (target.dataset.editNote) { const mark = store.marks.find((entry) => entry.id === target.dataset.editNote); if (mark) noteModal(mark); return; }
   if (target.dataset.deleteMark) { store.marks = store.marks.filter((entry) => entry.id !== target.dataset.deleteMark); save(); closeModal(); render(); notify('Note removed.'); return; }
   if (target.dataset.jump) { jumpTo(target.dataset.jump); return; }
-  if (target.dataset.retry) { const item = store.readings.find((entry) => entry.id === target.dataset.retry); if (item) importLink(item.url, item.id); return; }
+  if (target.dataset.retry) { const item = store.readings.find((entry) => entry.id === target.dataset.retry); if (item) { route('inbox'); importLink(item.url, item.id); } return; }
   const action = target.dataset.action;
   if (action === 'add') addModal();
   else if (action === 'close-modal') closeModal();
@@ -391,3 +524,4 @@ window.addEventListener('hashchange', () => {
 });
 
 render();
+preloadCovers();

@@ -7,5 +7,9 @@
     "dev": "node server.js",
     "start": "node server.js",
     "test": "node --test"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "jsdom": "^26.1.0"
   }
 }

@@ -2,7 +2,7 @@ import http from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { importArticle } from './article.js';
+import { importArticle, importImage } from './article.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const port = Number(process.env.PORT || 4173);
@@ -13,7 +13,7 @@ http.createServer(async (request, response) => {
     response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
     response.end(JSON.stringify({ error: message }));
   };
-  if (request.url === '/api/import' && request.method === 'POST') {
+  if (['/api/import', '/api/asset'].includes(request.url) && request.method === 'POST') {
     let body = '';
     try {
       for await (const chunk of request) {
@@ -22,9 +22,15 @@ http.createServer(async (request, response) => {
       }
       const url = JSON.parse(body).url;
       if (typeof url !== 'string') return fail(400, 'Enter an article URL.');
-      const article = await importArticle(url);
-      response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-      response.end(JSON.stringify(article));
+      if (request.url === '/api/asset') {
+        const asset = await importImage(url);
+        response.writeHead(200, { 'Content-Type': asset.mime, 'Content-Length': asset.bytes.length, 'Cache-Control': 'no-store' });
+        response.end(asset.bytes);
+      } else {
+        const article = await importArticle(url);
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        response.end(JSON.stringify(article));
+      }
     } catch (error) { fail(400, error.message || 'The article could not be imported.'); }
     return;
   }

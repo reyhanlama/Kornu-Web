@@ -1,5 +1,7 @@
 node_modules/
 .netlify/
+public/config.js
+public/vendor/
 .env
 .env.*
 .DS_Store

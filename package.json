@@ -4,12 +4,19 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "npm test && node build.js",
+    "predev": "node build.js",
     "dev": "node server.js",
+    "prestart": "node build.js",
     "start": "node server.js",
     "test": "node --test"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
+    "@supabase/supabase-js": "^2.118.0",
     "jsdom": "^26.1.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
   }
 }

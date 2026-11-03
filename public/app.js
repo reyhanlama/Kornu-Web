@@ -1,6 +1,10 @@
-import { putSnapshot, getSnapshot, putAsset, getAsset, getAllSnapshots, getAllAssets } from './storage.js';
+import { putSnapshot, getSnapshot, putAsset, getAsset, getAllSnapshotEntries, getAllAssets } from './storage.js';
+import { cloud } from './cloud.js';
 
 const STORE_KEY = 'kornu.web.v1';
+const accountStoreKey = (id) => `${STORE_KEY}.account.${id}`;
+const dirtyStoreKey = (id) => `${STORE_KEY}.pending.${id}`;
+const uploadedStoreKey = (id) => `${STORE_KEY}.uploaded.${id}`;
 const markNames = { highlight: 'Highlight', underline: 'Underline', note: 'Note' };
 const sampleReadings = [
   {
@@ -28,14 +32,23 @@ const sampleReadings = [
   }
 ];
 
-const readStore = () => {
+const readStore = (key = STORE_KEY) => {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORE_KEY));
+    const saved = JSON.parse(localStorage.getItem(key));
     if (saved && Array.isArray(saved.readings) && Array.isArray(saved.marks)) return saved;
   } catch { /* Start clean if browser storage is unavailable or malformed. */ }
   return { readings: sampleReadings, marks: [], articleNotes: {}, progress: {} };
 };
 let store = readStore();
+let activeStoreKey = STORE_KEY;
+let account = null;
+let cloudStatus = 'Saved in this browser';
+let dirtyReadings = new Set();
+let uploadedAssets = new Set();
+let syncTimer;
+let syncing = false;
+let accountGeneration = 0;
+const changeVersions = new Map();
 let view = location.hash.match(/^#\/(inbox|library|marks|reader)/)?.[1] || 'library';
 let readerID = location.hash.match(/^#\/reader\/([^/]+)/)?.[1] || null;
 let search = '';
@@ -47,15 +60,31 @@ let progressTimer;
 let lastRenderedReader = null;
 const loadingSnapshots = new Set();
 const assetURLs = new Map();
+const snapshotCacheKey = (id) => account ? `account:${account.id}:snapshot:${id}` : id;
+const assetCacheKey = (key) => account ? `account:${account.id}:asset:${key}` : key;
+const localSnapshot = (id) => getSnapshot(snapshotCacheKey(id));
+const writeSnapshot = (id, snapshot) => putSnapshot(snapshotCacheKey(id), snapshot);
+const localAsset = (key) => getAsset(assetCacheKey(key));
+const writeAsset = (key, blob) => putAsset(assetCacheKey(key), blob);
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const esc = (value = '') => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
-const compactStore = () => ({ ...store, readings: store.readings.map((item) => {
+const compactItem = (item) => {
   if (!item.snapshotStored) return item;
   const { blocks, paragraphs, images, ...metadata } = item;
   return metadata;
-}) });
-const save = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify(compactStore())); } catch { notify('Browser storage is full. Export a backup from the menu.'); } };
+};
+const compactStore = () => ({ ...store, readings: store.readings.map(compactItem) });
+const persistStore = () => { try { localStorage.setItem(activeStoreKey, JSON.stringify(compactStore())); } catch { notify('Browser storage is full. Export a backup from the menu.'); } };
+const save = (readingID = null) => {
+  persistStore();
+  if (account && readingID) {
+    dirtyReadings.add(readingID);
+    changeVersions.set(readingID, (changeVersions.get(readingID) || 0) + 1);
+    persistPending();
+    scheduleCloudSync();
+  }
+};
 const uid = () => crypto.randomUUID();
 const reading = () => store.readings.find((item) => item.id === readerID);
 const marksFor = (id) => store.marks.filter((mark) => mark.readingID === id).sort((a, b) => a.paragraphIndex - b.paragraphIndex || a.start - b.start);
@@ -76,7 +105,8 @@ const icon = (name, size = 18) => {
     dots: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
     close: '<path d="M5 5l14 14M19 5 5 19"/>', check: '<path d="m4 12 5 5L20 6"/>',
     quote: '<path d="M4 5h7v7H7l-2 5M14 5h7v7h-4l-2 5"/>',
-    download: '<path d="M12 3v13m-5-5 5 5 5-5M4 19h16"/>'
+    download: '<path d="M12 3v13m-5-5 5 5 5-5M4 19h16"/>',
+    account: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3-7 8-7s8 3 8 7"/>'
   };
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || ''}</svg>`;
 };
@@ -91,19 +121,216 @@ function navItem(area, label, symbol) {
 }
 
 function shell(content, title, kicker = '') {
+  const accountName = account?.user_metadata?.full_name || account?.email || 'Your account';
   return `<div class="app-shell">
     <aside class="sidebar">
       <div class="brand-row"><img src="/wordmark.svg" alt="Kornu" class="wordmark"></div>
       <div class="sidebar-main"><div class="nav-label">WORKSPACE</div>
         ${navItem('inbox', 'Inbox', 'tray')}${navItem('library', 'Library', 'book')}${navItem('marks', 'Marks & Notes', 'mark')}
       </div>
-      <div class="sidebar-bottom"><div class="sidebar-line"></div><div class="sidebar-foot-title">A quieter place to think.</div><div class="sidebar-foot-copy">Your browser library is stored on this device.</div><button class="text-link" data-action="backup">Export backup ${icon('arrow', 14)}</button></div>
+      <div class="sidebar-bottom"><div class="sidebar-line"></div><div class="sidebar-foot-title">A quieter place to think.</div><div class="sidebar-foot-copy" data-cloud-status>${esc(account ? cloudStatus : 'Your browser library is stored on this device.')}</div><button class="account-button" data-action="account">${icon('account', 17)} <span>${esc(account ? accountName : 'Sign in with Google')}</span></button><button class="text-link" data-action="backup">Export backup ${icon('arrow', 14)}</button></div>
     </aside>
     <div class="workspace">
-      <header class="topbar"><button class="mobile-brand" data-route="library"><img src="/wordmark.svg" alt="Kornu"></button><div class="breadcrumb">${kicker ? `<span>${esc(kicker)}</span><span class="crumb-slash">/</span>` : ''}<strong>${esc(title)}</strong></div><div class="topbar-actions"><button class="icon-button backup-top" aria-label="Export browser backup" data-action="backup">${icon('download')}</button><button class="icon-button" aria-label="Search library" data-action="focus-search">${icon('search')}</button><button class="primary-button" data-action="add">${icon('plus', 17)}<span>Add a link</span></button></div></header>
+      <header class="topbar"><button class="mobile-brand" data-route="library"><img src="/wordmark.svg" alt="Kornu"></button><div class="breadcrumb">${kicker ? `<span>${esc(kicker)}</span><span class="crumb-slash">/</span>` : ''}<strong>${esc(title)}</strong></div><div class="topbar-actions"><button class="icon-button account-top" aria-label="${esc(account ? `Account: ${accountName}` : 'Sign in with Google')}" data-action="account">${icon('account')}</button><button class="icon-button backup-top" aria-label="Export browser backup" data-action="backup">${icon('download')}</button><button class="icon-button" aria-label="Search library" data-action="focus-search">${icon('search')}</button><button class="primary-button" data-action="add">${icon('plus', 17)}<span>Add a link</span></button></div></header>
       <main class="main-content">${content}</main>
       <nav class="mobile-nav">${navItem('inbox', 'Inbox', 'tray')}${navItem('library', 'Library', 'book')}${navItem('marks', 'Marks', 'mark')}</nav>
     </div></div>`;
+}
+
+function loadSet(key) {
+  try { return new Set(JSON.parse(localStorage.getItem(key) || '[]')); }
+  catch { return new Set(); }
+}
+
+function setCloudStatus(message) {
+  cloudStatus = message;
+  document.querySelectorAll('[data-cloud-status]').forEach((element) => { element.textContent = message; });
+}
+
+function persistPending() {
+  if (account) localStorage.setItem(dirtyStoreKey(account.id), JSON.stringify([...dirtyReadings]));
+}
+
+function persistUploaded() {
+  if (account) localStorage.setItem(uploadedStoreKey(account.id), JSON.stringify([...uploadedAssets]));
+}
+
+function scheduleCloudSync(delay = 1400) {
+  if (!account) return;
+  setCloudStatus('Saving to your profile…');
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(flushCloudSync, delay);
+}
+
+async function flushCloudSync() {
+  if (!account || syncing) return;
+  syncing = true;
+  const userID = account.id;
+  try {
+    while (account?.id === userID && dirtyReadings.size) {
+      const readingID = dirtyReadings.values().next().value;
+      const item = store.readings.find((entry) => entry.id === readingID);
+      if (!item) { dirtyReadings.delete(readingID); persistPending(); continue; }
+      if (item.status === 'preparing') break;
+      const version = changeVersions.get(readingID) || 0;
+      const snapshot = item.snapshotStored ? await localSnapshot(readingID) : null;
+      if (account?.id !== userID) return;
+      if (item.snapshotStored && !snapshot) throw new Error('A saved article copy is missing on this browser.');
+      const keys = [...new Set((snapshot?.blocks || []).map((block) => block.assetKey).filter(Boolean))];
+      for (const key of keys) {
+        if (uploadedAssets.has(key)) continue;
+        const blob = await localAsset(key);
+        if (account?.id !== userID) return;
+        if (!blob) continue;
+        await cloud.uploadAsset(userID, key, blob);
+        uploadedAssets.add(key);
+        persistUploaded();
+      }
+      await cloud.saveReading(userID, readingID, {
+        item: compactItem(item), snapshot,
+        marks: marksFor(readingID), progress: store.progress[readingID] || 0,
+        articleNote: store.articleNotes[readingID] || ''
+      });
+      if (account?.id !== userID) return;
+      if ((changeVersions.get(readingID) || 0) === version) {
+        dirtyReadings.delete(readingID);
+        persistPending();
+      }
+    }
+    if (account?.id === userID) setCloudStatus(dirtyReadings.size ? 'Saved here; waiting to sync' : 'Saved to your profile');
+  } catch (error) {
+    if (account?.id === userID) {
+      setCloudStatus('Saved here; cloud sync paused');
+      notify(error.message || 'Cloud sync is unavailable right now.');
+    }
+  } finally {
+    syncing = false;
+    if (account?.id !== userID && dirtyReadings.size) scheduleCloudSync(0);
+  }
+}
+
+async function savedAsset(key) {
+  const userID = account?.id;
+  let blob = await localAsset(key);
+  if (!blob && userID && account?.id === userID) {
+    blob = await cloud.downloadAsset(userID, key);
+    await putAsset(`account:${userID}:asset:${key}`, blob);
+  }
+  return blob;
+}
+
+async function loadProfile(userID, generation) {
+  setCloudStatus('Loading your profile…');
+  try {
+    const rows = await cloud.readings();
+    if (account?.id !== userID || generation !== accountGeneration) return;
+    const remoteIDs = new Set();
+    for (const row of rows) {
+      const data = row.data;
+      if (!data?.item || data.item.id !== row.reading_id) continue;
+      remoteIDs.add(row.reading_id);
+      if (dirtyReadings.has(row.reading_id)) continue;
+      const position = store.readings.findIndex((item) => item.id === row.reading_id);
+      if (position >= 0) store.readings[position] = data.item;
+      else store.readings.unshift(data.item);
+      store.marks = store.marks.filter((mark) => mark.readingID !== row.reading_id).concat(data.marks || []);
+      store.progress[row.reading_id] = data.progress || 0;
+      store.articleNotes[row.reading_id] = data.articleNote || '';
+      if (data.snapshot) await putSnapshot(`account:${userID}:snapshot:${row.reading_id}`, data.snapshot);
+      if (account?.id !== userID || generation !== accountGeneration) return;
+    }
+    store.readings = store.readings.filter((item) => item.source === 'Kornu sample' || remoteIDs.has(item.id) || dirtyReadings.has(item.id));
+    persistStore();
+    render();
+    preloadCovers();
+    if (dirtyReadings.size) scheduleCloudSync(0);
+    else setCloudStatus('Saved to your profile');
+  } catch (error) {
+    if (account?.id === userID) {
+      setCloudStatus('Saved here; cloud sync paused');
+      notify(error.message || 'Your profile could not be loaded.');
+    }
+  }
+}
+
+function switchAccount(user) {
+  if (account?.id === user?.id) return;
+  const generation = ++accountGeneration;
+  clearTimeout(syncTimer);
+  for (const url of assetURLs.values()) URL.revokeObjectURL(url);
+  assetURLs.clear();
+  account = user;
+  activeStoreKey = user ? accountStoreKey(user.id) : STORE_KEY;
+  store = readStore(activeStoreKey);
+  dirtyReadings = user ? loadSet(dirtyStoreKey(user.id)) : new Set();
+  uploadedAssets = user ? loadSet(uploadedStoreKey(user.id)) : new Set();
+  changeVersions.clear();
+  cloudStatus = user ? 'Loading your profile…' : 'Saved in this browser';
+  view = 'library'; readerID = null;
+  location.hash = '#/library';
+  render();
+  preloadCovers();
+  if (user) loadProfile(user.id, generation);
+}
+
+function hasGuestLibrary() {
+  const guest = readStore(STORE_KEY);
+  return guest.readings.some((item) => item.source !== 'Kornu sample') || guest.marks.length ||
+    Object.keys(guest.articleNotes || {}).length || Object.keys(guest.progress || {}).length;
+}
+
+function accountModal() {
+  if (!cloud.configured) {
+    showModal(`<div class="modal-overline">KORNU ACCOUNT</div><button class="modal-close" data-action="close-modal" aria-label="Close">${icon('close')}</button><h2>Make this space yours.</h2><p>Google sign-in needs a Kornu cloud project. The app is ready to connect once its Supabase URL, publishable key, and Google provider are set up.</p><div class="modal-actions"><button class="primary-button" data-action="close-modal">Keep reading here</button></div>`);
+    return;
+  }
+  if (!account) {
+    showModal(`<div class="modal-overline">KORNU ACCOUNT</div><button class="modal-close" data-action="close-modal" aria-label="Close">${icon('close')}</button><h2>Take your readings with you.</h2><p>Sign in to save articles, images, highlights, notes, and reading progress to your private profile.</p><div class="modal-actions"><button class="outline-button" data-action="close-modal">Not now</button><button class="primary-button" data-action="sign-in-google">Continue with Google ${icon('arrow', 16)}</button></div><div class="modal-footnote">Your current browser library stays here until you choose to copy it into your profile.</div>`);
+    return;
+  }
+  showModal(`<div class="modal-overline">YOUR KORNU ACCOUNT</div><button class="modal-close" data-action="close-modal" aria-label="Close">${icon('close')}</button><h2>Your reading space.</h2><p>${esc(account.email || 'Signed in with Google')}</p><p class="account-modal-status">${esc(cloudStatus)}</p>${hasGuestLibrary() ? `<button class="outline-button account-import-button" data-action="copy-browser-library">Copy this browser's library into my profile</button>` : ''}<div class="modal-actions"><button class="outline-button" data-action="sign-out">Sign out</button><button class="primary-button" data-action="close-modal">Done</button></div>`);
+}
+
+async function copyBrowserLibrary() {
+  if (!account) return;
+  const profileID = account.id;
+  const guest = readStore(STORE_KEY);
+  const changed = new Set();
+  const existing = new Set(store.readings.map((item) => item.id));
+  for (const item of guest.readings) {
+    if (!existing.has(item.id)) { store.readings.push(item); existing.add(item.id); changed.add(item.id); }
+  }
+  const markIDs = new Set(store.marks.map((mark) => mark.id));
+  for (const mark of guest.marks) {
+    if (existing.has(mark.readingID) && !markIDs.has(mark.id)) { store.marks.push(mark); markIDs.add(mark.id); changed.add(mark.readingID); }
+  }
+  for (const [id, note] of Object.entries(guest.articleNotes || {})) {
+    if (existing.has(id) && note && !store.articleNotes[id]) { store.articleNotes[id] = note; changed.add(id); }
+  }
+  for (const [id, progress] of Object.entries(guest.progress || {})) {
+    if (existing.has(id) && progress > (store.progress[id] || 0)) { store.progress[id] = progress; changed.add(id); }
+  }
+  persistStore();
+  for (const id of changed) {
+    dirtyReadings.add(id);
+    changeVersions.set(id, (changeVersions.get(id) || 0) + 1);
+  }
+  persistPending();
+  try {
+    for (const id of changed) {
+      const snapshot = await getSnapshot(id);
+      if (!snapshot) continue;
+      await putSnapshot(`account:${profileID}:snapshot:${id}`, snapshot);
+      for (const key of [...new Set((snapshot.blocks || []).map((block) => block.assetKey).filter(Boolean))]) {
+        const blob = await getAsset(key);
+        if (blob) await putAsset(`account:${profileID}:asset:${key}`, blob);
+      }
+    }
+  } catch (error) { notify(error.message || 'This browser copy could not be prepared.'); return; }
+  if (account?.id !== profileID) return;
+  closeModal(); render();
+  if (changed.size) scheduleCloudSync(0);
+  notify(changed.size ? 'Copying your browser library to your profile…' : 'Your profile already has these readings.');
 }
 
 function searchBar() {
@@ -260,8 +487,10 @@ async function hydrateReading(id) {
   if (loadingSnapshots.has(id)) return;
   loadingSnapshots.add(id);
   const item = store.readings.find((entry) => entry.id === id);
+  const generation = accountGeneration;
   try {
-    const snapshot = await getSnapshot(id);
+    const snapshot = await localSnapshot(id);
+    if (generation !== accountGeneration) return;
     if (!snapshot) throw new Error('The saved reading copy is missing from this browser.');
     item.paragraphs = snapshot.paragraphs;
     item.blocks = snapshot.blocks;
@@ -269,8 +498,8 @@ async function hydrateReading(id) {
     const keys = [...new Set(snapshot.blocks.map((block) => block.assetKey).filter(Boolean))];
     await Promise.all(keys.map(async (key) => {
       if (assetURLs.has(key)) return;
-      const blob = await getAsset(key);
-      if (blob) assetURLs.set(key, URL.createObjectURL(blob));
+      const blob = await savedAsset(key);
+      if (blob && generation === accountGeneration) assetURLs.set(key, URL.createObjectURL(blob));
     }));
   } catch (error) {
     item.status = 'needsReview';
@@ -278,7 +507,7 @@ async function hydrateReading(id) {
     save();
   } finally {
     loadingSnapshots.delete(id);
-    if (view === 'reader' && readerID === id) render();
+    if (generation === accountGeneration && view === 'reader' && readerID === id) render();
   }
 }
 
@@ -365,7 +594,7 @@ function inspectSelection() {
 function addMark(kind) {
   if (!selection || !reading()) return;
   const mark = { id: uid(), readingID: readerID, kind, ...selection, note: '', createdAt: new Date().toISOString() };
-  store.marks.push(mark); save(); hideSelection(); render();
+  store.marks.push(mark); save(readerID); hideSelection(); render();
   if (kind === 'note') noteModal(mark);
   else notify(`${markNames[kind]} saved.`);
 }
@@ -380,11 +609,15 @@ async function importLink(url, existingID = null) {
     item = { id: uid(), title: 'New reading', source: new URL(url).hostname.replace(/^www\./, ''), subtitle: '', url, status: 'preparing', issue: '', savedAt: new Date().toISOString(), paragraphs: [], images: [] };
     store.readings.unshift(item);
   }
-  item.status = 'preparing'; item.issue = ''; save(); render(); notify('Preparing your reading…');
+  item.status = 'preparing'; item.issue = ''; save(item.id); render(); notify('Preparing your reading…');
   try {
     const response = await fetch('/api/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Import failed.');
+    if (existingID && account) {
+      for (const key of uploadedAssets) if (key.startsWith(`${item.id}:image:`)) uploadedAssets.delete(key);
+      persistUploaded();
+    }
     const blocks = data.blocks || [];
     const pictures = blocks.filter((block) => block.kind === 'image');
     let cursor = 0, failed = 0, coverAssetKey = null;
@@ -397,7 +630,7 @@ async function importLink(url, existingID = null) {
           const assetResponse = await fetch('/api/asset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: picture.url }) });
           if (!assetResponse.ok) throw new Error('Image unavailable.');
           const blob = await assetResponse.blob();
-          await putAsset(key, blob);
+          await writeAsset(key, blob);
           picture.assetKey = key;
           assetURLs.set(key, URL.createObjectURL(blob));
           if (!coverAssetKey) coverAssetKey = key;
@@ -405,7 +638,7 @@ async function importLink(url, existingID = null) {
       }
     }
     await Promise.all(Array.from({ length: Math.min(3, pictures.length) }, worker));
-    await putSnapshot(item.id, { id: item.id, paragraphs: data.paragraphs, blocks, images: data.images, wordCount: data.wordCount });
+    await writeSnapshot(item.id, { id: item.id, paragraphs: data.paragraphs, blocks, images: data.images, wordCount: data.wordCount });
     const issue = [data.warning, failed ? `${failed} image${failed === 1 ? '' : 's'} could not be saved for offline reading.` : ''].filter(Boolean).join(' ');
     Object.assign(item, {
       title: data.title, source: data.source, subtitle: data.subtitle, byline: data.byline,
@@ -415,13 +648,19 @@ async function importLink(url, existingID = null) {
     });
     notify(item.status === 'ready' ? `Reading saved${pictures.length ? ` with ${pictures.length - failed} images` : ''}.` : 'Only a preview was found.');
   } catch (error) { item.status = 'needsReview'; item.issue = error.message || 'Import failed.'; notify('This link needs review.'); }
-  save(); render();
+  save(item.id); render();
 }
 
 async function backup() {
   notify('Preparing your browser backup…');
   try {
-    const [snapshots, storedAssets] = await Promise.all([getAllSnapshots(), getAllAssets()]);
+    const [allSnapshots, allAssets] = await Promise.all([getAllSnapshotEntries(), getAllAssets()]);
+    const readingIDs = new Set(store.readings.map((item) => item.id));
+    const snapshots = allSnapshots.filter((entry) => readingIDs.has(entry.snapshot.id) && entry.key === snapshotCacheKey(entry.snapshot.id)).map((entry) => entry.snapshot);
+    const assetKeys = new Set(snapshots.flatMap((entry) => entry.blocks || []).map((block) => block.assetKey).filter(Boolean));
+    await Promise.all([...assetKeys].map((key) => savedAsset(key)));
+    const freshAssets = account ? await getAllAssets() : allAssets;
+    const storedAssets = freshAssets.filter((entry) => assetKeys.has(entry.key.replace(`account:${account?.id}:asset:`, '')) && entry.key === assetCacheKey(entry.key.replace(`account:${account?.id}:asset:`, ''))).map((entry) => ({ key: entry.key.replace(`account:${account?.id}:asset:`, ''), blob: entry.blob }));
     const assets = await Promise.all(storedAssets.map(({ key, blob }) => new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve({ key, data: reader.result });
@@ -439,14 +678,15 @@ async function backup() {
 }
 
 async function preloadCovers() {
+  const generation = accountGeneration;
   const keys = [...new Set(store.readings.map((item) => item.coverAssetKey).filter(Boolean))];
   if (!keys.length) return;
   await Promise.all(keys.map(async (key) => {
     if (assetURLs.has(key)) return;
-    const blob = await getAsset(key).catch(() => null);
-    if (blob) assetURLs.set(key, URL.createObjectURL(blob));
+    const blob = await savedAsset(key).catch(() => null);
+    if (blob && generation === accountGeneration) assetURLs.set(key, URL.createObjectURL(blob));
   }));
-  if (view === 'library') render();
+  if (generation === accountGeneration && view === 'library') render();
 }
 
 document.addEventListener('click', (event) => {
@@ -460,16 +700,20 @@ document.addEventListener('click', (event) => {
   if (target.dataset.filter) { filter = target.dataset.filter; render(); return; }
   if (target.dataset.markKind) { addMark(target.dataset.markKind); return; }
   if (target.dataset.editNote) { const mark = store.marks.find((entry) => entry.id === target.dataset.editNote); if (mark) noteModal(mark); return; }
-  if (target.dataset.deleteMark) { store.marks = store.marks.filter((entry) => entry.id !== target.dataset.deleteMark); save(); closeModal(); render(); notify('Note removed.'); return; }
+  if (target.dataset.deleteMark) { const mark = store.marks.find((entry) => entry.id === target.dataset.deleteMark); store.marks = store.marks.filter((entry) => entry.id !== target.dataset.deleteMark); save(mark?.readingID); closeModal(); render(); notify('Note removed.'); return; }
   if (target.dataset.jump) { jumpTo(target.dataset.jump); return; }
   if (target.dataset.retry) { const item = store.readings.find((entry) => entry.id === target.dataset.retry); if (item) { route('inbox'); importLink(item.url, item.id); } return; }
   const action = target.dataset.action;
   if (action === 'add') addModal();
+  else if (action === 'account') accountModal();
+  else if (action === 'sign-in-google') cloud.signIn().catch((error) => notify(error.message || 'Google sign-in could not start.'));
+  else if (action === 'sign-out') cloud.signOut().then(() => { closeModal(); switchAccount(null); }).catch((error) => notify(error.message || 'Sign out failed.'));
+  else if (action === 'copy-browser-library') copyBrowserLibrary();
   else if (action === 'close-modal') closeModal();
   else if (action === 'focus-search') { if (view === 'reader') route('library'); requestAnimationFrame(() => $('#library-search')?.focus()); }
   else if (action === 'toggle-marks') { showReaderMarks = !showReaderMarks; render(); }
   else if (action === 'article-note') articleNoteModal();
-  else if (action === 'finish') { store.progress[readerID] = 100; save(); notify('Marked as finished.'); }
+  else if (action === 'finish') { store.progress[readerID] = 100; save(readerID); notify('Marked as finished.'); }
   else if (action === 'backup') backup();
 });
 
@@ -481,9 +725,9 @@ document.addEventListener('submit', (event) => {
     closeModal(); route('inbox'); importLink(url);
   } else if (event.target.id === 'note-form') {
     const mark = store.marks.find((entry) => entry.id === event.target.dataset.id);
-    if (mark) { mark.note = $('#note-text').value.trim(); save(); closeModal(); render(); notify('Thought saved.'); }
+    if (mark) { mark.note = $('#note-text').value.trim(); save(mark.readingID); closeModal(); render(); notify('Thought saved.'); }
   } else if (event.target.id === 'article-note-form') {
-    store.articleNotes[readerID] = $('#article-note-text').value.trim(); save(); closeModal(); render(); notify('Reading note saved.');
+    store.articleNotes[readerID] = $('#article-note-text').value.trim(); save(readerID); closeModal(); render(); notify('Reading note saved.');
   }
 });
 
@@ -512,7 +756,7 @@ window.addEventListener('scroll', () => {
   clearTimeout(progressTimer);
   progressTimer = setTimeout(() => {
     const max = document.documentElement.scrollHeight - innerHeight;
-    if (max > 0 && readerID === activeID) { store.progress[activeID] = Math.max(store.progress[activeID] || 0, Math.min(99, Math.round(scrollY / max * 100))); save(); }
+    if (max > 0 && readerID === activeID) { const progress = Math.max(store.progress[activeID] || 0, Math.min(99, Math.round(scrollY / max * 100))); if (progress !== store.progress[activeID]) { store.progress[activeID] = progress; save(activeID); } }
   }, 400);
 }, { passive: true });
 window.addEventListener('hashchange', () => {
@@ -525,3 +769,8 @@ window.addEventListener('hashchange', () => {
 
 render();
 preloadCovers();
+if (cloud.configured) {
+  cloud.onAuthChange((user) => switchAccount(user));
+  cloud.session().then((session) => switchAccount(session?.user || null))
+    .catch((error) => notify(error.message || 'Your account could not be opened.'));
+}

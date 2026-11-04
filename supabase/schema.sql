@@ -34,10 +34,15 @@ using (user_id = (select auth.uid()));
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
-  'kornu-assets', 'kornu-assets', false, 4194304,
-  array['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif']
+  'kornu-assets', 'kornu-assets', false, 52428800,
+  array['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif',
+    'application/epub+zip', 'application/x-mobipocket-ebook',
+    'application/vnd.amazon.ebook', 'application/x-fictionbook+xml',
+    'application/zip', 'application/vnd.comicbook+zip']
 )
-on conflict (id) do nothing;
+on conflict (id) do update set
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
 
 drop policy if exists "Kornu readers see their own images" on storage.objects;
 create policy "Kornu readers see their own images"

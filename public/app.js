@@ -1,5 +1,6 @@
-import { putSnapshot, getSnapshot, putAsset, getAsset, getAllSnapshotEntries, getAllAssets } from './storage.js';
+import { putSnapshot, getSnapshot, putAsset, getAsset, putBook, getBook, getAllSnapshotEntries, getAllAssets } from './storage.js';
 import { cloud } from './cloud.js';
+import { inspectBook, openBook } from './book.js';
 
 const STORE_KEY = 'kornu.web.v1';
 const accountStoreKey = (id) => `${STORE_KEY}.account.${id}`;
@@ -58,6 +59,8 @@ let selection = null;
 let toastTimer;
 let progressTimer;
 let lastRenderedReader = null;
+let activeBookView = null;
+let bookMountToken = 0;
 const loadingSnapshots = new Set();
 const assetURLs = new Map();
 const snapshotCacheKey = (id) => account ? `account:${account.id}:snapshot:${id}` : id;
@@ -66,6 +69,9 @@ const localSnapshot = (id) => getSnapshot(snapshotCacheKey(id));
 const writeSnapshot = (id, snapshot) => putSnapshot(snapshotCacheKey(id), snapshot);
 const localAsset = (key) => getAsset(assetCacheKey(key));
 const writeAsset = (key, blob) => putAsset(assetCacheKey(key), blob);
+const bookCacheKey = (id) => account ? `account:${account.id}:book:${id}` : id;
+const localBook = (id) => getBook(bookCacheKey(id));
+const writeBook = (id, blob) => putBook(bookCacheKey(id), blob);
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const esc = (value = '') => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -91,7 +97,7 @@ const marksFor = (id) => store.marks.filter((mark) => mark.readingID === id).sor
 const wordCount = (item) => item.wordCount || item.paragraphs?.join(' ').trim().split(/\s+/).length || 0;
 const minutes = (item) => Math.max(1, Math.ceil(wordCount(item) / 220));
 const day = (value) => new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(value));
-const featureSource = (item) => item.coverAssetKey ? assetURLs.get(item.coverAssetKey) || '/editorial.png' : item.images?.[0]?.url || '/editorial.png';
+const featureSource = (item) => item.coverAssetKey ? assetURLs.get(item.coverAssetKey) || null : item.kind === 'book' ? null : item.images?.[0]?.url || '/editorial.png';
 const notify = (message) => {
   const toast = $('#toast'); toast.textContent = message; toast.classList.add('visible');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('visible'), 3200);
@@ -131,7 +137,7 @@ function shell(content, title, kicker = '') {
       <div class="sidebar-bottom"><div class="sidebar-line"></div><div class="sidebar-foot-title">A quieter place to think.</div><div class="sidebar-foot-copy" data-cloud-status>${esc(account ? cloudStatus : 'Your browser library is stored on this device.')}</div><button class="account-button" data-action="account">${icon('account', 17)} <span>${esc(account ? accountName : 'Sign in with Google')}</span></button><button class="text-link" data-action="backup">Export backup ${icon('arrow', 14)}</button></div>
     </aside>
     <div class="workspace">
-      <header class="topbar"><button class="mobile-brand" data-route="library"><img src="/wordmark.svg" alt="Kornu"></button><div class="breadcrumb">${kicker ? `<span>${esc(kicker)}</span><span class="crumb-slash">/</span>` : ''}<strong>${esc(title)}</strong></div><div class="topbar-actions"><button class="icon-button account-top" aria-label="${esc(account ? `Account: ${accountName}` : 'Sign in with Google')}" data-action="account">${icon('account')}</button><button class="icon-button backup-top" aria-label="Export browser backup" data-action="backup">${icon('download')}</button><button class="icon-button" aria-label="Search library" data-action="focus-search">${icon('search')}</button><button class="primary-button" data-action="add">${icon('plus', 17)}<span>Add a link</span></button></div></header>
+      <header class="topbar"><button class="mobile-brand" data-route="library"><img src="/wordmark.svg" alt="Kornu"></button><div class="breadcrumb">${kicker ? `<span>${esc(kicker)}</span><span class="crumb-slash">/</span>` : ''}<strong>${esc(title)}</strong></div><div class="topbar-actions"><button class="icon-button account-top" aria-label="${esc(account ? `Account: ${accountName}` : 'Sign in with Google')}" data-action="account">${icon('account')}</button><button class="icon-button backup-top" aria-label="Export browser backup" data-action="backup">${icon('download')}</button><button class="icon-button" aria-label="Search library" data-action="focus-search">${icon('search')}</button><button class="primary-button" data-action="add">${icon('plus', 17)}<span>Add a reading</span></button></div></header>
       <main class="main-content">${content}</main>
       <nav class="mobile-nav">${navItem('inbox', 'Inbox', 'tray')}${navItem('library', 'Library', 'book')}${navItem('marks', 'Marks', 'mark')}</nav>
     </div></div>`;
@@ -176,7 +182,7 @@ async function flushCloudSync() {
       const snapshot = item.snapshotStored ? await localSnapshot(readingID) : null;
       if (account?.id !== userID) return;
       if (item.snapshotStored && !snapshot) throw new Error('A saved article copy is missing on this browser.');
-      const keys = [...new Set((snapshot?.blocks || []).map((block) => block.assetKey).filter(Boolean))];
+      const keys = [...new Set([...((snapshot?.blocks || []).map((block) => block.assetKey)), item.coverAssetKey].filter(Boolean))];
       for (const key of keys) {
         if (uploadedAssets.has(key)) continue;
         const blob = await localAsset(key);
@@ -184,6 +190,14 @@ async function flushCloudSync() {
         if (!blob) continue;
         await cloud.uploadAsset(userID, key, blob);
         uploadedAssets.add(key);
+        persistUploaded();
+      }
+      if (item.kind === 'book' && !uploadedAssets.has(`${readingID}:book`)) {
+        const file = await localBook(readingID);
+        if (account?.id !== userID) return;
+        if (!file) throw new Error('A saved book file is missing on this browser.');
+        await cloud.uploadBook(userID, readingID, file);
+        uploadedAssets.add(`${readingID}:book`);
         persistUploaded();
       }
       await cloud.saveReading(userID, readingID, {
@@ -217,6 +231,16 @@ async function savedAsset(key) {
     await putAsset(`account:${userID}:asset:${key}`, blob);
   }
   return blob;
+}
+
+async function savedBook(id) {
+  const userID = account?.id;
+  let file = await localBook(id);
+  if (!file && userID && account?.id === userID) {
+    file = await cloud.downloadBook(userID, id);
+    await putBook(`account:${userID}:book:${id}`, file);
+  }
+  return file;
 }
 
 async function loadProfile(userID, generation) {
@@ -318,6 +342,15 @@ async function copyBrowserLibrary() {
   persistPending();
   try {
     for (const id of changed) {
+      const guestItem = guest.readings.find((item) => item.id === id);
+      if (guestItem?.kind === 'book') {
+        const file = await getBook(id);
+        if (file) await putBook(`account:${profileID}:book:${id}`, file);
+        if (guestItem.coverAssetKey) {
+          const cover = await getAsset(guestItem.coverAssetKey);
+          if (cover) await putAsset(`account:${profileID}:asset:${guestItem.coverAssetKey}`, cover);
+        }
+      }
       const snapshot = await getSnapshot(id);
       if (!snapshot) continue;
       await putSnapshot(`account:${profileID}:snapshot:${id}`, snapshot);
@@ -340,7 +373,7 @@ function searchBar() {
 function readingRow(item, index = 0) {
   const progress = store.progress[item.id] || 0;
   const count = marksFor(item.id).length;
-  return `<button class="reading-row" data-open="${esc(item.id)}"><span class="row-index">${String(index + 1).padStart(2, '0')}</span><span class="row-main"><span class="row-source">${esc(item.source)}</span><strong>${esc(item.title)}</strong><span class="row-detail">${esc(item.subtitle || 'Saved to your reading space')}</span></span><span class="row-meta">${item.status === 'ready' ? `${minutes(item)} min read` : item.status === 'preparing' ? 'Preparing…' : 'Needs review'}${count ? `<small>${count} mark${count === 1 ? '' : 's'}</small>` : ''}${progress > 0 ? `<small>${progress >= 100 ? 'Finished' : `${progress}% read`}</small>` : ''}</span><span class="row-arrow">${icon('arrow', 19)}</span></button>`;
+  return `<button class="reading-row" data-open="${esc(item.id)}"><span class="row-index">${String(index + 1).padStart(2, '0')}</span><span class="row-main"><span class="row-source">${esc(item.source)}</span><strong>${esc(item.title)}</strong><span class="row-detail">${esc(item.subtitle || 'Saved to your reading space')}</span></span><span class="row-meta">${item.status === 'ready' ? item.kind === 'book' ? 'Ebook' : `${minutes(item)} min read` : item.status === 'preparing' ? 'Preparing…' : 'Needs review'}${count ? `<small>${count} mark${count === 1 ? '' : 's'}</small>` : ''}${progress > 0 ? `<small>${progress >= 100 ? 'Finished' : `${progress}% read`}</small>` : ''}</span><span class="row-arrow">${icon('arrow', 19)}</span></button>`;
 }
 
 function libraryView() {
@@ -353,18 +386,18 @@ function libraryView() {
   const featured = ready.find((item) => store.progress[item.id] > 0 && store.progress[item.id] < 100)
     || ready.find((item) => item.images?.some((image) => image.url === '/editorial.png')) || ready[0];
   const intro = `<div class="page-heading"><div><div class="eyebrow">YOUR READING SPACE</div><h1>Library<span class="heading-dot">.</span></h1><p>${ready.length} reading${ready.length === 1 ? '' : 's'} saved for later.</p></div>${searchBar()}</div>`;
-  const feature = !search && filter === 'all' && featured ? `<section class="feature"><img class="feature-image" src="${esc(featureSource(featured))}" alt=""><div class="feature-shade"></div><div class="feature-content"><span class="feature-label">${(store.progress[featured.id] || 0) > 0 ? 'CONTINUE READING' : 'START HERE'}</span><h2>${esc(featured.title)}</h2><p>${esc(featured.subtitle)}</p><button class="light-button" data-open="${esc(featured.id)}">Open reading ${icon('arrow', 17)}</button></div><span class="feature-number">01 / ${String(ready.length).padStart(2, '0')}</span></section>` : '';
+  const feature = !search && filter === 'all' && featured ? `<section class="feature">${featureSource(featured) ? `<img class="feature-image" src="${esc(featureSource(featured))}" alt="">` : ''}<div class="feature-shade"></div><div class="feature-content"><span class="feature-label">${(store.progress[featured.id] || 0) > 0 ? 'CONTINUE READING' : 'START HERE'}</span><h2>${esc(featured.title)}</h2><p>${esc(featured.subtitle)}</p><button class="light-button" data-open="${esc(featured.id)}">Open reading ${icon('arrow', 17)}</button></div><span class="feature-number">01 / ${String(ready.length).padStart(2, '0')}</span></section>` : '';
   const filters = [['all', 'All'], ['unread', 'Unread'], ['reading', 'In progress'], ['finished', 'Finished']].map(([key, label]) => `<button class="filter ${filter === key ? 'selected' : ''}" data-filter="${key}">${label}</button>`).join('');
-  const list = filtered.length ? filtered.map(readingRow).join('') : `<div class="empty"><strong>Nothing here yet.</strong><p>${search ? 'Try another search.' : 'Add a link or choose another filter.'}</p></div>`;
+  const list = filtered.length ? filtered.map(readingRow).join('') : `<div class="empty"><strong>Nothing here yet.</strong><p>${search ? 'Try another search.' : 'Add a link or book, or choose another filter.'}</p></div>`;
   return shell(`<div class="content-wrap">${intro}${feature}<section class="list-section"><div class="section-heading"><h2>All readings</h2><div class="filters">${filters}</div></div><div class="reading-list">${list}</div></section></div>`, 'Library');
 }
 
 function inboxView() {
   const pending = store.readings.filter((item) => item.status !== 'ready');
   const recent = store.readings.filter((item) => item.status === 'ready').slice(0, 5);
-  return shell(`<div class="content-wrap"><div class="page-heading"><div><div class="eyebrow">SAVED FROM THE WEB</div><h1>Inbox<span class="heading-dot">.</span></h1><p>Everything you collect arrives here first.</p></div>${searchBar()}</div>
-    <div class="inbox-intro"><div><span class="overline">A LINK, THEN A READING</span><h2>Keep what is worth returning to.</h2></div><button class="outline-button" data-action="add">Paste a link ${icon('plus', 16)}</button></div>
-    ${pending.length ? `<section class="list-section"><div class="section-heading"><h2>Needs attention</h2><span class="count-label">${pending.length}</span></div><div class="reading-list">${pending.map(readingRow).join('')}</div></section>` : '<div class="inbox-clear">'+icon('check', 18)+'<span>All caught up. New links will appear here.</span></div>'}
+  return shell(`<div class="content-wrap"><div class="page-heading"><div><div class="eyebrow">SAVED FOR LATER</div><h1>Inbox<span class="heading-dot">.</span></h1><p>Links and books arrive here first.</p></div>${searchBar()}</div>
+    <div class="inbox-intro"><div><span class="overline">A PLACE FOR WHAT MATTERS</span><h2>Keep what is worth returning to.</h2></div><button class="outline-button" data-action="add">Add a reading ${icon('plus', 16)}</button></div>
+    ${pending.length ? `<section class="list-section"><div class="section-heading"><h2>Needs attention</h2><span class="count-label">${pending.length}</span></div><div class="reading-list">${pending.map(readingRow).join('')}</div></section>` : '<div class="inbox-clear">'+icon('check', 18)+'<span>All caught up. New readings will appear here.</span></div>'}
     <section class="list-section"><div class="section-heading"><h2>Recently saved</h2></div><div class="reading-list">${recent.filter((item) => `${item.title} ${item.source}`.toLowerCase().includes(search.toLowerCase())).map(readingRow).join('') || '<div class="empty">No readings match your search.</div>'}</div></section></div>`, 'Inbox');
 }
 
@@ -441,12 +474,48 @@ function articleBlock(item, block) {
   return `<div class="paragraph-wrap ${typeClass}" data-paragraph="${index}">${listPrefix}<${tag} class="article-paragraph">${markedText(item, paragraph, index, block.html)}</${tag}>${notes.map((mark) => `<button class="note-marker" data-edit-note="${esc(mark.id)}" aria-label="Open note ${noteNumber(mark)}">${noteNumber(mark)}</button>`).join('')}</div>`;
 }
 
+function bookReaderView(item) {
+  const progress = store.progress[item.id] || 0;
+  return shell(`<div class="book-reader"><div class="book-reader-head"><button class="back-button" data-route="library">${icon('back', 17)} Library</button><div class="book-reader-heading"><span>${esc(item.format || 'EBOOK')} ${item.byline ? `· ${esc(item.byline)}` : ''}</span><strong>${esc(item.title)}</strong></div><button class="plain-button" data-action="book-toc">Contents</button></div><div class="book-reading-area"><div id="book-view-mount" class="book-view-mount"><div class="book-loading">Opening your book…</div></div><aside id="book-toc" class="book-toc" hidden><div class="overline">CONTENTS</div><div id="book-toc-list"></div></aside></div><div class="book-reader-foot"><button class="outline-button" data-action="book-prev">${icon('back', 15)} Previous</button><span class="book-progress">${progress}% read</span><button class="outline-button" data-action="book-next">Next ${icon('arrow', 15)}</button></div></div>`, item.title, 'Library');
+}
+
+function bookTOC(items, depth = 0) {
+  return (items || []).map((item) => `<button class="book-toc-item" style="padding-left:${12 + Math.min(depth, 3) * 15}px" data-book-href="${esc(item.href || '')}">${esc(item.label || 'Untitled section')}</button>${bookTOC(item.subitems, depth + 1)}`).join('');
+}
+
+async function mountBookReader(id, token) {
+  const item = store.readings.find((entry) => entry.id === id);
+  const mount = $('#book-view-mount');
+  if (!item || !mount) return;
+  try {
+    const file = await savedBook(id);
+    if (token !== bookMountToken) return;
+    if (!file) throw new Error('The book file is missing from this browser.');
+    const view = await openBook(mount, file, item, (location) => {
+      if (token !== bookMountToken || !Number.isInteger(location?.index)) return;
+      const progress = Math.max(0, Math.min(100, Math.round((location.fraction || 0) * 100)));
+      const changed = item.bookLocation !== location.index || store.progress[id] !== progress;
+      item.bookLocation = location.index;
+      store.progress[id] = progress;
+      const label = $('.book-progress'); if (label) label.textContent = `${progress}% read`;
+      if (changed) save(id);
+    });
+    if (token !== bookMountToken) { view.close(); return; }
+    activeBookView = view;
+    const toc = $('#book-toc-list');
+    if (toc) toc.innerHTML = bookTOC(view.book.toc) || '<p class="book-toc-empty">No contents list in this file.</p>';
+  } catch (error) {
+    if (token === bookMountToken) mount.innerHTML = `<div class="book-loading book-load-error"><strong>Could not open this book.</strong><p>${esc(error.message || 'This file could not be read.')}</p><button class="outline-button" data-action="add">Add another file</button></div>`;
+  }
+}
+
 function readerView() {
   const item = reading();
   if (!item) return libraryView();
   if (item.status !== 'ready') {
     return shell(`<div class="content-wrap"><div class="reader-back"><button class="back-button" data-route="inbox">${icon('back', 16)} Back to Inbox</button></div><div class="review-screen"><div class="eyebrow">NEEDS REVIEW</div><h1>${esc(item.title)}</h1><p>${esc(item.issue || 'Kornu could not prepare this link.')}</p><div class="review-actions"><button class="primary-button" data-retry="${esc(item.id)}">Try again</button><a class="outline-button" href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">Open original ${icon('external', 16)}</a></div></div></div>`, 'Review', 'Inbox');
   }
+  if (item.kind === 'book') return bookReaderView(item);
   if (item.snapshotStored && !item.blocks) {
     return shell('<div class="content-wrap"><div class="review-screen"><div class="eyebrow">OPENING READING</div><h1>Preparing your copy.</h1><p>Loading the article and its saved images from this browser.</p></div></div>', item.title, 'Library');
   }
@@ -512,6 +581,8 @@ async function hydrateReading(id) {
 }
 
 function render() {
+  const token = ++bookMountToken;
+  if (activeBookView) { activeBookView.close(); activeBookView = null; }
   const sameReader = view === 'reader' && lastRenderedReader === readerID && Boolean($('#reading-paper'));
   const previousScroll = sameReader ? window.scrollY : null;
   const item = reading();
@@ -521,7 +592,8 @@ function render() {
   else if (view === 'marks') $('#app').innerHTML = marksView();
   else $('#app').innerHTML = libraryView();
   positionMarkers();
-  if (view === 'reader') {
+  if (view === 'reader' && item?.kind === 'book' && item.status === 'ready') mountBookReader(item.id, token);
+  if (view === 'reader' && item?.kind !== 'book') {
     if (sameReader) requestAnimationFrame(() => window.scrollTo({ top: previousScroll, behavior: 'instant' }));
     else restorePosition();
   }
@@ -556,7 +628,7 @@ function showModal(html) {
 function closeModal() { $('#modal-root').innerHTML = ''; }
 
 function addModal() {
-  showModal(`<div class="modal-overline">ADD TO KORNU</div><button class="modal-close" data-action="close-modal" aria-label="Close">${icon('close')}</button><h2>Save a link.</h2><p>Kornu will prepare a clean reading copy when the article is available.</p><form id="add-form"><label for="article-url">Article URL</label><input id="article-url" type="url" placeholder="https://example.com/article" required autofocus><div class="modal-actions"><button type="button" class="outline-button" data-action="close-modal">Cancel</button><button class="primary-button" type="submit">Save reading ${icon('arrow', 16)}</button></div></form><div class="modal-footnote">Some sites block extraction or show only a preview. You can always open the original.</div>`);
+  showModal(`<div class="modal-overline">ADD TO KORNU</div><button class="modal-close" data-action="close-modal" aria-label="Close">${icon('close')}</button><h2>Bring a reading in.</h2><p>Save an article link or open a book you already have.</p><form id="add-form"><label for="article-url">Article URL</label><input id="article-url" type="url" placeholder="https://example.com/article" required autofocus><div class="modal-actions"><button class="primary-button" type="submit">Save link ${icon('arrow', 16)}</button></div></form><div class="add-divider"><span>OR ADD A BOOK</span></div><label class="book-file-picker" for="book-file">${icon('book', 23)}<span><strong>Choose a book file</strong><small>EPUB, AZW3, MOBI, FB2, or CBZ · up to 50 MB</small></span>${icon('arrow', 16)}</label><input id="book-file" class="book-file-input" type="file" accept=".epub,.azw,.azw3,.mobi,.fb2,.fbz,.cbz"><div class="modal-footnote">Books stay in this browser. When you sign in, Kornu can save them privately to your profile. Protected books may not open.</div>`);
 }
 
 function noteModal(mark) {
@@ -651,6 +723,37 @@ async function importLink(url, existingID = null) {
   save(item.id); render();
 }
 
+async function importBookFile(file) {
+  if (!file) return;
+  const generation = accountGeneration;
+  closeModal();
+  notify('Preparing your book…');
+  try {
+    const result = await inspectBook(file);
+    if (generation !== accountGeneration) return;
+    const id = uid();
+    const coverAssetKey = result.cover ? `${id}:image:0` : null;
+    await writeBook(id, result.file);
+    if (coverAssetKey) {
+      await writeAsset(coverAssetKey, result.cover);
+      assetURLs.set(coverAssetKey, URL.createObjectURL(result.cover));
+    }
+    if (generation !== accountGeneration) return;
+    const item = {
+      id, kind: 'book', title: result.title, source: result.format,
+      subtitle: result.author || 'A book from your files', byline: result.author,
+      format: result.format, filename: result.file.name, fileType: result.file.type,
+      coverAssetKey, status: 'ready', savedAt: new Date().toISOString(), bookLocation: null
+    };
+    store.readings.unshift(item);
+    save(id);
+    route('reader', id);
+    notify(`${result.format} added to your library.`);
+  } catch (error) {
+    showModal(`<div class="modal-overline">BOOK IMPORT</div><button class="modal-close" data-action="close-modal" aria-label="Close">${icon('close')}</button><h2>Could not open this file.</h2><p>${esc(error.message || 'This book could not be read.')}</p><div class="modal-actions"><button class="primary-button" data-action="add">Choose another reading</button></div>`);
+  }
+}
+
 async function backup() {
   notify('Preparing your browser backup…');
   try {
@@ -667,7 +770,18 @@ async function backup() {
       reader.onerror = () => reject(reader.error);
       reader.readAsDataURL(blob);
     })));
-    const archive = { version: 2, exportedAt: new Date().toISOString(), ...compactStore(), snapshots, assets };
+    const books = await Promise.all(store.readings.filter((item) => item.kind === 'book').map(async (item) => {
+      const file = await savedBook(item.id);
+      if (!file) throw new Error('A book file is missing.');
+      const data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      return { id: item.id, filename: item.filename, data };
+    }));
+    const archive = { version: 3, exportedAt: new Date().toISOString(), ...compactStore(), snapshots, assets, books };
     const blob = new Blob([JSON.stringify(archive)], { type: 'application/json' });
     const link = document.createElement('a'); link.href = URL.createObjectURL(blob);
     link.download = `kornu-backup-${new Date().toISOString().slice(0, 10)}.json`;
@@ -690,13 +804,14 @@ async function preloadCovers() {
 }
 
 document.addEventListener('click', (event) => {
-  const target = event.target.closest('[data-route],[data-open],[data-action],[data-filter],[data-mark-kind],[data-edit-note],[data-delete-mark],[data-jump],[data-retry]');
+  const target = event.target.closest('[data-route],[data-open],[data-action],[data-filter],[data-mark-kind],[data-edit-note],[data-delete-mark],[data-jump],[data-retry],[data-book-href]');
   if (!target) {
     if (event.target.classList.contains('modal-backdrop')) closeModal();
     return;
   }
   if (target.dataset.route) { hideSelection(); route(target.dataset.route); return; }
   if (target.dataset.open) { hideSelection(); route('reader', target.dataset.open); return; }
+  if (target.dataset.bookHref) { activeBookView?.goTo(target.dataset.bookHref); $('#book-toc').hidden = true; return; }
   if (target.dataset.filter) { filter = target.dataset.filter; render(); return; }
   if (target.dataset.markKind) { addMark(target.dataset.markKind); return; }
   if (target.dataset.editNote) { const mark = store.marks.find((entry) => entry.id === target.dataset.editNote); if (mark) noteModal(mark); return; }
@@ -713,6 +828,9 @@ document.addEventListener('click', (event) => {
   else if (action === 'focus-search') { if (view === 'reader') route('library'); requestAnimationFrame(() => $('#library-search')?.focus()); }
   else if (action === 'toggle-marks') { showReaderMarks = !showReaderMarks; render(); }
   else if (action === 'article-note') articleNoteModal();
+  else if (action === 'book-toc') { const toc = $('#book-toc'); if (toc) toc.hidden = !toc.hidden; }
+  else if (action === 'book-prev') activeBookView?.prev();
+  else if (action === 'book-next') activeBookView?.next();
   else if (action === 'finish') { store.progress[readerID] = 100; save(readerID); notify('Marked as finished.'); }
   else if (action === 'backup') backup();
 });
@@ -739,6 +857,9 @@ document.addEventListener('input', (event) => {
     const input = $('#library-search'); input?.focus(); input?.setSelectionRange(caret, caret);
   }
 });
+document.addEventListener('change', (event) => {
+  if (event.target.id === 'book-file') importBookFile(event.target.files?.[0]);
+});
 
 document.addEventListener('mouseup', () => setTimeout(inspectSelection, 0));
 document.addEventListener('touchend', () => setTimeout(inspectSelection, 180), { passive: true });
@@ -748,10 +869,14 @@ document.addEventListener('keyup', (event) => {
 });
 document.addEventListener('keydown', (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); if (view === 'reader') route('library'); requestAnimationFrame(() => $('#library-search')?.focus()); }
+  if (activeBookView && !$('#modal-root').children.length && !['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) {
+    if (event.key === 'ArrowLeft') { event.preventDefault(); activeBookView.goLeft(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); activeBookView.goRight(); }
+  }
 });
 window.addEventListener('resize', positionMarkers);
 window.addEventListener('scroll', () => {
-  if (view !== 'reader' || !reading()) return;
+  if (view !== 'reader' || !reading() || reading().kind === 'book') return;
   const activeID = readerID;
   clearTimeout(progressTimer);
   progressTimer = setTimeout(() => {

@@ -1,5 +1,5 @@
 const DB_NAME = 'kornu-web-snapshots';
-const VERSION = 1;
+const VERSION = 2;
 
 let connection;
 function database() {
@@ -9,6 +9,7 @@ function database() {
       const db = request.result;
       if (!db.objectStoreNames.contains('snapshots')) db.createObjectStore('snapshots');
       if (!db.objectStoreNames.contains('assets')) db.createObjectStore('assets');
+      if (!db.objectStoreNames.contains('books')) db.createObjectStore('books');
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -45,6 +46,8 @@ export async function getAllSnapshotEntries() {
 }
 export const putAsset = (key, blob) => operation('assets', 'readwrite', 'put', blob, key);
 export const getAsset = (key) => operation('assets', 'readonly', 'get', key);
+export const putBook = (key, blob) => operation('books', 'readwrite', 'put', blob, key);
+export const getBook = (key) => operation('books', 'readonly', 'get', key);
 
 export async function getAllAssets() {
   const db = await database();

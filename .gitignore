@@ -2,6 +2,7 @@ node_modules/
 .netlify/
 public/config.js
 public/vendor/
+public/ebook/
 .env
 .env.*
 .DS_Store

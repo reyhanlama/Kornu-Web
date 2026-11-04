@@ -20,5 +20,16 @@ await build({
   target: ['es2022'],
   minify: true
 });
+await build({
+  entryPoints: { 'book-view': 'src/book-view.js' },
+  outdir: 'public/ebook',
+  bundle: true,
+  splitting: true,
+  chunkNames: 'chunks/[name]-[hash]',
+  format: 'esm',
+  platform: 'browser',
+  target: ['es2022'],
+  minify: true
+});
 await writeFile('public/config.js', `export const cloudConfig = ${JSON.stringify({ url, key })};\n`);
 console.log(url ? 'Kornu account client is configured.' : 'Kornu is ready in browser-only mode.');

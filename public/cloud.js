@@ -16,6 +16,10 @@ function assetPath(userID, assetKey) {
   if (!match) throw new Error('This image has an invalid storage key.');
   return `${userID}/${match[1]}/${match[2]}`;
 }
+function bookPath(userID, readingID) {
+  if (!/^[a-f0-9-]{36}$/i.test(readingID)) throw new Error('This book has an invalid storage key.');
+  return `${userID}/${readingID}/book`;
+}
 
 export const cloud = {
   configured,
@@ -67,6 +71,17 @@ export const cloud = {
   },
   async downloadAsset(userID, assetKey) {
     const { data, error } = await requireClient().storage.from('kornu-assets').download(assetPath(userID, assetKey));
+    if (error) throw error;
+    return data;
+  },
+  async uploadBook(userID, readingID, blob) {
+    const { error } = await requireClient().storage.from('kornu-assets').upload(bookPath(userID, readingID), blob, {
+      upsert: true, contentType: blob.type || 'application/octet-stream'
+    });
+    if (error) throw error;
+  },
+  async downloadBook(userID, readingID) {
+    const { data, error } = await requireClient().storage.from('kornu-assets').download(bookPath(userID, readingID));
     if (error) throw error;
     return data;
   }

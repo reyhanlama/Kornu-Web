@@ -36,7 +36,15 @@ const sampleReadings = [
 const readStore = (key = STORE_KEY) => {
   try {
     const saved = JSON.parse(localStorage.getItem(key));
-    if (saved && Array.isArray(saved.readings) && Array.isArray(saved.marks)) return saved;
+    if (saved && Array.isArray(saved.readings) && Array.isArray(saved.marks)) {
+      saved.readings.forEach((item) => {
+        if (item.status === 'preparing') {
+          item.status = 'needsReview';
+          item.issue = 'Capture was interrupted. Try again to prepare this reading.';
+        }
+      });
+      return saved;
+    }
   } catch { /* Start clean if browser storage is unavailable or malformed. */ }
   return { readings: sampleReadings, marks: [], articleNotes: {}, progress: {} };
 };
@@ -54,11 +62,13 @@ let view = location.hash.match(/^#\/(inbox|library|marks|reader)/)?.[1] || 'libr
 let readerID = location.hash.match(/^#\/reader\/([^/]+)/)?.[1] || null;
 let search = '';
 let filter = 'all';
-let showReaderMarks = true;
+let showReaderMarks = false;
 let selection = null;
+let openNoteID = null;
 let toastTimer;
 let progressTimer;
 let lastRenderedReader = null;
+let openInitialReaderAtTop = false;
 let activeBookView = null;
 let bookMountToken = 0;
 const loadingSnapshots = new Set();
@@ -93,11 +103,13 @@ const save = (readingID = null) => {
 };
 const uid = () => crypto.randomUUID();
 const reading = () => store.readings.find((item) => item.id === readerID);
+// Book support is paused in this web preview. Preserve saved books for a later release.
+const visibleReadings = () => store.readings.filter((item) => item.kind !== 'book');
 const marksFor = (id) => store.marks.filter((mark) => mark.readingID === id).sort((a, b) => a.paragraphIndex - b.paragraphIndex || a.start - b.start);
 const wordCount = (item) => item.wordCount || item.paragraphs?.join(' ').trim().split(/\s+/).length || 0;
 const minutes = (item) => Math.max(1, Math.ceil(wordCount(item) / 220));
 const day = (value) => new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(value));
-const featureSource = (item) => item.coverAssetKey ? assetURLs.get(item.coverAssetKey) || null : item.kind === 'book' ? null : item.images?.[0]?.url || '/editorial.png';
+const featureSource = (item) => item.coverAssetKey ? assetURLs.get(item.coverAssetKey) || null : item.kind === 'book' ? null : item.images?.[0]?.url || null;
 const notify = (message) => {
   const toast = $('#toast'); toast.textContent = message; toast.classList.add('visible');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('visible'), 3200);
@@ -118,29 +130,33 @@ const icon = (name, size = 18) => {
 };
 
 function route(next, id) {
-  location.hash = next === 'reader' ? `#/reader/${id}` : `#/${next}`;
-  if (location.hash === `#/${next}` && view === next) render();
+  if (next === 'library' && matchMedia('(min-width: 1251px)').matches) {
+    const selected = visibleReadings().find((item) => item.id === readerID && item.status === 'ready')
+      || visibleReadings().find((item) => item.status === 'ready');
+    if (selected) { route('reader', selected.id); return; }
+  }
+  const destination = next === 'reader' ? `#/reader/${id}` : `#/${next}`;
+  if (location.hash === destination) render();
+  else location.hash = destination;
 }
 
 function navItem(area, label, symbol) {
-  return `<button class="nav-item ${view === area ? 'active' : ''}" data-route="${area}">${icon(symbol)}<span>${label}</span>${area === 'inbox' && store.readings.some((item) => item.status !== 'ready') ? '<i class="nav-dot"></i>' : ''}</button>`;
+  return `<button class="nav-item ${view === area || (view === 'reader' && area === 'library') ? 'active' : ''}" data-route="${area}">${icon(symbol)}<span>${label}</span>${area === 'inbox' && visibleReadings().some((item) => item.status !== 'ready') ? '<i class="nav-dot"></i>' : ''}</button>`;
 }
 
 function shell(content, title, kicker = '') {
   const accountName = account?.user_metadata?.full_name || account?.email || 'Your account';
-  return `<div class="app-shell">
-    <aside class="sidebar">
-      <div class="brand-row"><img src="/wordmark.svg" alt="Kornu" class="wordmark"></div>
-      <div class="sidebar-main"><div class="nav-label">WORKSPACE</div>
-        ${navItem('inbox', 'Inbox', 'tray')}${navItem('library', 'Library', 'book')}${navItem('marks', 'Marks & Notes', 'mark')}
-      </div>
-      <div class="sidebar-bottom"><div class="sidebar-line"></div><div class="sidebar-foot-title">A quieter place to think.</div><div class="sidebar-foot-copy" data-cloud-status>${esc(account ? cloudStatus : 'Your browser library is stored on this device.')}</div><button class="account-button" data-action="account">${icon('account', 17)} <span>${esc(account ? accountName : 'Sign in with Google')}</span></button><button class="text-link" data-action="backup">Export backup ${icon('arrow', 14)}</button></div>
-    </aside>
-    <div class="workspace">
-      <header class="topbar"><button class="mobile-brand" data-route="library"><img src="/wordmark.svg" alt="Kornu"></button><div class="breadcrumb">${kicker ? `<span>${esc(kicker)}</span><span class="crumb-slash">/</span>` : ''}<strong>${esc(title)}</strong></div><div class="topbar-actions"><button class="icon-button account-top" aria-label="${esc(account ? `Account: ${accountName}` : 'Sign in with Google')}" data-action="account">${icon('account')}</button><button class="icon-button backup-top" aria-label="Export browser backup" data-action="backup">${icon('download')}</button><button class="icon-button" aria-label="Search library" data-action="focus-search">${icon('search')}</button><button class="primary-button" data-action="add">${icon('plus', 17)}<span>Add a reading</span></button></div></header>
-      <main class="main-content">${content}</main>
-      <nav class="mobile-nav">${navItem('inbox', 'Inbox', 'tray')}${navItem('library', 'Library', 'book')}${navItem('marks', 'Marks', 'mark')}</nav>
-    </div></div>`;
+  const split = view === 'library' || view === 'reader';
+  const main = split ? `<div class="split-workspace"><aside class="split-library"><div class="split-library-head"><button class="top-brand" data-route="library" aria-label="Kornu library"><img src="/wordmark.svg" alt="Kornu"></button><nav class="split-nav" aria-label="Primary">${navItem('library', 'Library', 'book')}${navItem('marks', 'Marks & Notes', 'mark')}${navItem('inbox', 'Inbox', 'tray')}</nav><details class="topbar-more"><summary aria-label="More options">${icon('dots', 20)}</summary><div class="more-panel"><div class="more-status" data-cloud-status>${esc(account ? cloudStatus : 'Saved in this browser')}</div><button data-action="account">${icon('account', 17)} ${esc(account ? accountName : 'Sign in with Google')}</button><button data-action="backup">${icon('download', 17)} Export backup</button></div></details></div>${libraryPanel()}</aside><section class="split-reading">${content}</section></div>` : content;
+  return `<div class="app-shell view-${view}">
+    <header class="topbar"><button class="top-brand" data-route="library" aria-label="Kornu library"><img src="/wordmark.svg" alt="Kornu"></button>
+      <nav class="top-nav" aria-label="Primary">${navItem('library', 'Library', 'book')}${navItem('marks', 'Marks & Notes', 'mark')}${navItem('inbox', 'Inbox', 'tray')}</nav>
+      <div class="topbar-actions">${view === 'reader' ? '' : `<button class="primary-button" data-action="add" aria-label="Add a reading">${icon('plus', 17)}<span>Add a reading</span></button>`}
+        <details class="topbar-more"><summary aria-label="More options">${icon('dots', 20)}<span>More</span></summary><div class="more-panel"><div class="more-status" data-cloud-status>${esc(account ? cloudStatus : 'Saved in this browser')}</div><button data-action="account" aria-label="${esc(account ? `Account: ${accountName}` : 'Sign in with Google')}">${icon('account', 17)} ${esc(account ? accountName : 'Sign in with Google')}</button><button data-action="backup" aria-label="Export backup">${icon('download', 17)} Export backup</button></div></details>
+      </div></header>
+    <div class="workspace"><main class="main-content">${main}</main></div>
+    <nav class="mobile-nav" aria-label="Primary mobile">${navItem('library', 'Library', 'book')}${navItem('inbox', 'Inbox', 'tray')}${navItem('marks', 'Marks', 'mark')}</nav>
+  </div>`;
 }
 
 function loadSet(key) {
@@ -366,52 +382,61 @@ async function copyBrowserLibrary() {
   notify(changed.size ? 'Copying your browser library to your profile…' : 'Your profile already has these readings.');
 }
 
-function searchBar() {
-  return `<label class="search-field">${icon('search', 18)}<input id="library-search" type="search" placeholder="Search your readings" value="${esc(search)}" autocomplete="off"><span>⌘ K</span></label>`;
+function searchBar(placeholder = 'Search your readings') {
+  return `<label class="search-field">${icon('search', 18)}<input id="library-search" type="search" placeholder="${esc(placeholder)}" value="${esc(search)}" autocomplete="off"><span>⌘ K</span></label>`;
 }
 
 function readingRow(item, index = 0) {
   const progress = store.progress[item.id] || 0;
   const count = marksFor(item.id).length;
-  return `<button class="reading-row" data-open="${esc(item.id)}"><span class="row-index">${String(index + 1).padStart(2, '0')}</span><span class="row-main"><span class="row-source">${esc(item.source)}</span><strong>${esc(item.title)}</strong><span class="row-detail">${esc(item.subtitle || 'Saved to your reading space')}</span></span><span class="row-meta">${item.status === 'ready' ? item.kind === 'book' ? 'Ebook' : `${minutes(item)} min read` : item.status === 'preparing' ? 'Preparing…' : 'Needs review'}${count ? `<small>${count} mark${count === 1 ? '' : 's'}</small>` : ''}${progress > 0 ? `<small>${progress >= 100 ? 'Finished' : `${progress}% read`}</small>` : ''}</span><span class="row-arrow">${icon('arrow', 19)}</span></button>`;
+  const status = item.status === 'ready' ? progress >= 100 ? 'Finished' : progress > 0 ? 'In progress' : 'Not started' : item.status === 'preparing' ? 'Preparing…' : 'Needs review';
+  return `<button class="reading-row ${item.id === readerID ? 'selected' : ''}" data-open="${esc(item.id)}"><span class="row-index">${String(index + 1).padStart(2, '0')}</span><span class="row-main"><strong>${esc(item.title)}</strong><span class="row-source">${esc(item.source)}</span><span class="row-detail">${esc(item.subtitle || 'Saved to your reading space')}</span></span><span class="row-meta"><span class="status-pill">${status}</span>${count ? `<small>${count} mark${count === 1 ? '' : 's'}</small>` : ''}</span><span class="row-arrow">${icon('arrow', 19)}</span></button>`;
 }
 
-function libraryView() {
-  const ready = store.readings.filter((item) => item.status === 'ready');
+function abstractCover() {
+  return `<span class="continue-art" aria-hidden="true"><svg viewBox="0 0 144 144" xmlns="http://www.w3.org/2000/svg"><rect width="144" height="144" fill="#e9d8f0"/><path d="M0 0h72v72H0c0-39.8 32.2-72 72-72Z" fill="#ff672b"/><path d="M144 0v72H72C72 32.2 104.2 0 144 0Z" fill="#fff5ef"/><path d="M0 72h72v72C32.2 144 0 111.8 0 72Z" fill="#4f2b66"/><path d="M72 72h72v72c-39.8 0-72-32.2-72-72Z" fill="#ff672b"/></svg></span>`;
+}
+
+function libraryPanel() {
+  const ready = visibleReadings().filter((item) => item.status === 'ready');
   const filtered = ready.filter((item) => {
     const matches = `${item.title} ${item.source} ${item.subtitle}`.toLowerCase().includes(search.toLowerCase());
     const progress = store.progress[item.id] || 0;
     return matches && (filter === 'all' || (filter === 'unread' && progress === 0) || (filter === 'reading' && progress > 0 && progress < 100) || (filter === 'finished' && progress >= 100));
   });
-  const featured = ready.find((item) => store.progress[item.id] > 0 && store.progress[item.id] < 100)
-    || ready.find((item) => item.images?.some((image) => image.url === '/editorial.png')) || ready[0];
-  const intro = `<div class="page-heading"><div><div class="eyebrow">YOUR READING SPACE</div><h1>Library<span class="heading-dot">.</span></h1><p>${ready.length} reading${ready.length === 1 ? '' : 's'} saved for later.</p></div>${searchBar()}</div>`;
-  const feature = !search && filter === 'all' && featured ? `<section class="feature">${featureSource(featured) ? `<img class="feature-image" src="${esc(featureSource(featured))}" alt="">` : ''}<div class="feature-shade"></div><div class="feature-content"><span class="feature-label">${(store.progress[featured.id] || 0) > 0 ? 'CONTINUE READING' : 'START HERE'}</span><h2>${esc(featured.title)}</h2><p>${esc(featured.subtitle)}</p><button class="light-button" data-open="${esc(featured.id)}">Open reading ${icon('arrow', 17)}</button></div><span class="feature-number">01 / ${String(ready.length).padStart(2, '0')}</span></section>` : '';
-  const filters = [['all', 'All'], ['unread', 'Unread'], ['reading', 'In progress'], ['finished', 'Finished']].map(([key, label]) => `<button class="filter ${filter === key ? 'selected' : ''}" data-filter="${key}">${label}</button>`).join('');
-  const list = filtered.length ? filtered.map(readingRow).join('') : `<div class="empty"><strong>Nothing here yet.</strong><p>${search ? 'Try another search.' : 'Add a link or book, or choose another filter.'}</p></div>`;
-  return shell(`<div class="content-wrap">${intro}${feature}<section class="list-section"><div class="section-heading"><h2>All readings</h2><div class="filters">${filters}</div></div><div class="reading-list">${list}</div></section></div>`, 'Library');
+  const featured = ready.find((item) => item.id === readerID && store.progress[item.id] > 0 && store.progress[item.id] < 100)
+    || ready.find((item) => store.progress[item.id] > 0 && store.progress[item.id] < 100);
+  const intro = `<div class="page-heading"><div><h1>Library</h1><p>${ready.length} saved article${ready.length === 1 ? '' : 's'}.</p></div><button class="primary-button library-add" data-action="add">${icon('plus', 17)} Add a link</button></div>`;
+  const feature = !search && filter === 'all' && featured ? `<section class="continue-section"><button class="continue-reading ${featured.id === readerID ? 'selected' : ''}" data-open="${esc(featured.id)}">${featureSource(featured) ? `<img class="continue-cover" src="${esc(featureSource(featured))}" alt="" loading="lazy">` : abstractCover()}<span class="continue-copy"><strong>${esc(featured.title)}</strong><span class="continue-source">${esc(featured.source)}</span><span class="continue-progress"><span class="progress-track"><span style="width:${Math.max(0, Math.min(100, store.progress[featured.id] || 0))}%"></span></span><span>${store.progress[featured.id]}% read</span></span></span></button></section>` : '';
+  const filters = `<label class="status-filter">Status <select id="status-filter" aria-label="Filter by reading status"><option value="all" ${filter === 'all' ? 'selected' : ''}>All</option><option value="unread" ${filter === 'unread' ? 'selected' : ''}>Not started</option><option value="reading" ${filter === 'reading' ? 'selected' : ''}>In progress</option><option value="finished" ${filter === 'finished' ? 'selected' : ''}>Finished</option></select></label>`;
+  const otherReadings = feature ? filtered.filter((item) => item.id !== featured.id) : filtered;
+  const list = otherReadings.length ? otherReadings.map(readingRow).join('') : `<div class="empty"><strong>${search ? 'No matches.' : feature ? 'Nothing else saved yet.' : 'Nothing here yet.'}</strong><p>${search ? 'Try another search.' : 'Add an article link, or choose another filter.'}</p></div>`;
+  return `<div class="content-wrap">${intro}${feature}${searchBar('Search your library…')}<section class="list-section"><div class="section-heading"><h2>Saved articles</h2>${filters}</div><div class="reading-list">${list}</div></section></div>`;
+}
+
+function libraryView() {
+  return shell(`<div class="reader-placeholder"><span class="reader-placeholder-mark">✳</span><h2>Choose a reading.</h2><p>Open an article from your library to read and annotate it here.</p></div>`, 'Library');
 }
 
 function inboxView() {
-  const pending = store.readings.filter((item) => item.status !== 'ready');
-  const recent = store.readings.filter((item) => item.status === 'ready').slice(0, 5);
-  return shell(`<div class="content-wrap"><div class="page-heading"><div><div class="eyebrow">SAVED FOR LATER</div><h1>Inbox<span class="heading-dot">.</span></h1><p>Links and books arrive here first.</p></div>${searchBar()}</div>
-    <div class="inbox-intro"><div><span class="overline">A PLACE FOR WHAT MATTERS</span><h2>Keep what is worth returning to.</h2></div><button class="outline-button" data-action="add">Add a reading ${icon('plus', 16)}</button></div>
+  const pending = visibleReadings().filter((item) => item.status !== 'ready');
+  const recent = visibleReadings().filter((item) => item.status === 'ready').slice(0, 5);
+  return shell(`<div class="content-wrap"><div class="page-heading"><div><div class="eyebrow">CAPTURE STATUS</div><h1>Inbox</h1><p>Check readings that are still preparing or need another look.</p></div>${searchBar()}</div>
     ${pending.length ? `<section class="list-section"><div class="section-heading"><h2>Needs attention</h2><span class="count-label">${pending.length}</span></div><div class="reading-list">${pending.map(readingRow).join('')}</div></section>` : '<div class="inbox-clear">'+icon('check', 18)+'<span>All caught up. New readings will appear here.</span></div>'}
     <section class="list-section"><div class="section-heading"><h2>Recently saved</h2></div><div class="reading-list">${recent.filter((item) => `${item.title} ${item.source}`.toLowerCase().includes(search.toLowerCase())).map(readingRow).join('') || '<div class="empty">No readings match your search.</div>'}</div></section></div>`, 'Inbox');
 }
 
 function marksView() {
   const results = store.marks.filter((mark) => {
-    const item = store.readings.find((entry) => entry.id === mark.readingID);
+    const item = visibleReadings().find((entry) => entry.id === mark.readingID);
+    if (!item) return false;
     return `${mark.quote} ${mark.note || ''} ${item?.title || ''}`.toLowerCase().includes(search.toLowerCase());
   }).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  return shell(`<div class="content-wrap"><div class="page-heading"><div><div class="eyebrow">YOUR THINKING, IN CONTEXT</div><h1>Marks & Notes<span class="heading-dot">.</span></h1><p>Every marked passage leads back to its place in the reading.</p></div>${searchBar()}</div>
+  return shell(`<div class="content-wrap"><div class="page-heading"><div><div class="eyebrow">YOUR PASSAGES</div><h1>Marks & Notes</h1><p>Open a mark to return to its place in the reading.</p></div></div>${searchBar('Search passages and notes')}
     <div class="marks-layout"><div class="marks-column"><div class="section-heading"><h2>Passages</h2><span class="count-label">${results.length}</span></div>${results.length ? results.map((mark) => {
       const item = store.readings.find((entry) => entry.id === mark.readingID);
       return `<button class="mark-result" data-jump="${esc(mark.id)}"><span class="mark-kind">${mark.kind === 'note' ? `<i class="mark-number">${noteNumber(mark)}</i>` : esc(markNames[mark.kind])}</span><span class="mark-result-main"><span class="mark-source">${esc(item?.title || 'Reading')} · ${esc(item?.source || '')}</span><strong>“${esc(mark.quote)}”</strong>${mark.note ? `<em>${esc(mark.note)}</em>` : ''}</span><span class="mark-result-arrow">${icon('arrow', 18)}</span></button>`;
-    }).join('') : `<div class="empty marks-empty">${icon('mark', 24)}<strong>Your marks will gather here.</strong><p>Open a reading, select a passage, and add a highlight, underline, or note.</p><button class="outline-button" data-route="library">Browse library ${icon('arrow', 16)}</button></div>`}</div>
-    <aside class="marks-aside"><span class="overline">A SMALL THOUGHT</span><p>“A mark is a record of meeting an idea.”</p><small>From A Room for Thought</small></aside></div></div>`, 'Marks & Notes');
+    }).join('') : `<div class="empty marks-empty">${icon('mark', 24)}<strong>Your marks will gather here.</strong><p>Open a reading, select a passage, and add a highlight, underline, or note.</p><button class="outline-button" data-route="library">Browse library ${icon('arrow', 16)}</button></div>`}</div></div></div>`, 'Marks & Notes');
 }
 
 function noteNumber(mark) {
@@ -453,7 +478,17 @@ function markedText(item, paragraph, index, richHTML = null) {
 function articleParagraph(item, text, index) {
   const notes = marksFor(item.id).filter((mark) => mark.kind === 'note' && mark.paragraphIndex === index);
   const figures = (item.images || []).filter((image) => image.afterParagraph === index).map((image) => `<figure><img src="${esc(image.url)}" alt="${esc(image.caption || '')}" loading="lazy" referrerpolicy="no-referrer"><figcaption>${esc(image.caption)}</figcaption></figure>`).join('');
-  return `<div class="paragraph-wrap" data-paragraph="${index}"><p class="article-paragraph">${markedText(item, text, index)}</p>${notes.map((mark) => `<button class="note-marker" data-edit-note="${esc(mark.id)}" aria-label="Open note ${noteNumber(mark)}">${noteNumber(mark)}</button>`).join('')}</div>${figures}`;
+  return `<div class="paragraph-wrap" data-paragraph="${index}"><p class="article-paragraph">${markedText(item, text, index)}</p>${notes.map((mark) => `<button class="note-marker" data-edit-note="${esc(mark.id)}" aria-label="Open note ${noteNumber(mark)}">${noteNumber(mark)}</button>`).join('')}${notes.map(passageNote).join('')}${notePreview(notes.find((mark) => mark.note && mark.id !== openNoteID))}</div>${figures}`;
+}
+
+function notePreview(mark) {
+  if (!mark) return '';
+  return `<button class="passage-note-preview" data-edit-note="${esc(mark.id)}" data-note-preview="${esc(mark.id)}" aria-label="Open note ${noteNumber(mark)}"><span>Note ${noteNumber(mark)}</span><em>${esc(mark.note)}</em></button>`;
+}
+
+function passageNote(mark) {
+  if (openNoteID !== mark.id) return '';
+  return `<form class="passage-note" data-note-id="${esc(mark.id)}" aria-label="Note ${noteNumber(mark)}"><div class="passage-note-top"><span>NOTE ${noteNumber(mark)}</span><button type="button" class="passage-note-close" data-close-note aria-label="Close note">${icon('close', 15)}</button></div><blockquote>“${esc(mark.quote)}”</blockquote><label for="passage-note-text">Your thought</label><textarea id="passage-note-text" rows="5" placeholder="Write beside this passage…">${esc(mark.note || '')}</textarea><div class="passage-note-foot"><span class="passage-note-status" aria-live="polite">Saved in this browser</span><button type="button" class="passage-note-delete" data-delete-mark="${esc(mark.id)}">Delete</button></div></form>`;
 }
 
 function articleBlock(item, block) {
@@ -471,7 +506,7 @@ function articleBlock(item, block) {
   const tag = block.kind === 'heading' ? (block.level <= 2 ? 'h2' : 'h3') : block.kind === 'quote' ? 'blockquote' : block.kind === 'code' ? 'pre' : 'p';
   const typeClass = `body-${block.kind}`;
   const listPrefix = block.kind === 'list-item' ? `<span class="list-prefix" aria-hidden="true">${block.ordered ? `${Number(block.number) || 1}.` : '•'}</span>` : '';
-  return `<div class="paragraph-wrap ${typeClass}" data-paragraph="${index}">${listPrefix}<${tag} class="article-paragraph">${markedText(item, paragraph, index, block.html)}</${tag}>${notes.map((mark) => `<button class="note-marker" data-edit-note="${esc(mark.id)}" aria-label="Open note ${noteNumber(mark)}">${noteNumber(mark)}</button>`).join('')}</div>`;
+  return `<div class="paragraph-wrap ${typeClass}" data-paragraph="${index}">${listPrefix}<${tag} class="article-paragraph">${markedText(item, paragraph, index, block.html)}</${tag}>${notes.map((mark) => `<button class="note-marker" data-edit-note="${esc(mark.id)}" aria-label="Open note ${noteNumber(mark)}">${noteNumber(mark)}</button>`).join('')}${notes.map(passageNote).join('')}${notePreview(notes.find((mark) => mark.note && mark.id !== openNoteID))}</div>`;
 }
 
 function bookReaderView(item) {
@@ -512,7 +547,10 @@ async function mountBookReader(id, token) {
 function readerView() {
   const item = reading();
   if (!item) return libraryView();
-  if (item.status !== 'ready') {
+  if (item.status === 'preparing') {
+    return shell(`<div class="reader-layout reader-pending"><div class="reader-main"><div class="reader-toolbar"><button class="back-button" data-route="library">${icon('back', 17)} Library</button><a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer" class="plain-button">Original ${icon('external', 15)}</a></div><article class="paper pending-paper" aria-busy="true" aria-live="polite"><div class="article-overline">${esc(item.source)}</div><h1>Opening your reading.</h1><p class="pending-description">Kornu is preparing the article and saving its images. You can keep reading here when it is ready.</p><div class="pending-lines" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div></article></div></div>`, 'Opening reading', 'Library');
+  }
+  if (item.status !== 'ready' && !(item.status === 'needsReview' && item.snapshotStored)) {
     return shell(`<div class="content-wrap"><div class="reader-back"><button class="back-button" data-route="inbox">${icon('back', 16)} Back to Inbox</button></div><div class="review-screen"><div class="eyebrow">NEEDS REVIEW</div><h1>${esc(item.title)}</h1><p>${esc(item.issue || 'Kornu could not prepare this link.')}</p><div class="review-actions"><button class="primary-button" data-retry="${esc(item.id)}">Try again</button><a class="outline-button" href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">Open original ${icon('external', 16)}</a></div></div></div>`, 'Review', 'Inbox');
   }
   if (item.kind === 'book') return bookReaderView(item);
@@ -522,8 +560,8 @@ function readerView() {
   const itemMarks = marksFor(item.id);
   const count = itemMarks.length;
   const articleNote = store.articleNotes[item.id] || '';
-  return shell(`<div class="reader-layout"><div class="reader-main"><div class="reader-toolbar"><button class="back-button" data-route="library">${icon('back', 17)} Library</button><div class="reader-toolbar-right"><span class="read-time">${minutes(item)} min read</span>${item.source !== 'Kornu sample' ? `<button class="plain-button recapture-button" data-retry="${esc(item.id)}" title="Capture this article again">${icon('download', 15)}<span>Recapture</span></button>` : ''}<a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer" class="plain-button">Original ${icon('external', 15)}</a><button class="plain-button" data-action="toggle-marks">${icon('mark', 16)} Marks <span class="toolbar-count">${count}</span></button></div></div>
-    <article class="paper" id="reading-paper"><div class="article-overline">${esc(item.source)} <span>·</span> SAVED ${day(item.savedAt).toUpperCase()}</div><h1>${esc(item.title)}</h1>${item.byline ? `<div class="article-byline">By ${esc(item.byline)}</div>` : ''}${item.subtitle ? `<p class="article-deck">${esc(item.subtitle)}</p>` : ''}${item.issue ? `<div class="capture-notice">${esc(item.issue)}</div>` : ''}<div class="article-rule"></div><div class="article-body">${item.blocks ? item.blocks.map((block) => articleBlock(item, block)).join('') : item.paragraphs.map((paragraph, index) => articleParagraph(item, paragraph, index)).join('')}</div><div class="article-end"><span class="end-mark">✳</span><p>You reached the end of this reading.</p><button class="text-link" data-action="finish">Mark as finished ${icon('check', 15)}</button></div></article></div>
+  return shell(`<div class="reader-layout"><div class="reader-main"><div class="reader-toolbar"><button class="back-button" data-action="close-reader">${icon('back', 17)} Back</button><span class="reader-toolbar-source">${esc(item.source)}</span><div class="reader-toolbar-right"><a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer" class="plain-button">Original article ${icon('external', 15)}</a>${item.source !== 'Kornu sample' ? `<button class="plain-button recapture-button" data-retry="${esc(item.id)}" title="Capture this article again">${icon('download', 15)}<span>Recapture</span></button>` : ''}<button class="plain-button" data-action="toggle-marks">${icon('mark', 16)} Marks <span class="toolbar-count">${count}</span></button></div></div>
+    <article class="paper" id="reading-paper"><div class="article-overline">SAVED ${day(item.savedAt).toUpperCase()}</div><h1>${esc(item.title)}</h1><div class="article-meta"><span>${minutes(item)} min read</span><i aria-hidden="true"></i><span>${esc(item.source)}</span></div>${item.byline ? `<div class="article-byline">By ${esc(item.byline)}</div>` : ''}${item.subtitle ? `<p class="article-deck">${esc(item.subtitle)}</p>` : ''}${item.issue ? `<div class="capture-notice" role="status"><strong>This copy may be incomplete.</strong><p>${esc(item.issue)}</p><div class="capture-notice-actions"><a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">Open original ${icon('external', 14)}</a><button data-retry="${esc(item.id)}">Retry capture ${icon('arrow', 14)}</button></div></div>` : ''}<div class="article-rule"></div><div class="article-body">${item.blocks ? item.blocks.map((block) => articleBlock(item, block)).join('') : item.paragraphs.map((paragraph, index) => articleParagraph(item, paragraph, index)).join('')}</div><div class="article-end"><span class="end-mark">✳</span><p>You reached the end of this reading.</p><button class="text-link" data-action="finish">Mark as finished ${icon('check', 15)}</button></div></article></div>
     <aside class="reader-aside ${showReaderMarks ? '' : 'reader-aside-hidden'}"><div class="aside-inner"><div class="aside-heading"><span class="overline">THIS READING</span><button class="aside-close" data-action="toggle-marks" aria-label="Close marks">${icon('close', 16)}</button></div><h2>Room for thought.</h2><p class="aside-subtitle">Select a passage to highlight, underline, or leave a note.</p><div class="aside-divider"></div><div class="aside-section-heading"><strong>Your marks</strong><span>${count}</span></div>
       ${itemMarks.length ? itemMarks.map((mark) => `<button class="aside-mark" data-jump="${esc(mark.id)}"><span class="aside-mark-type">${mark.kind === 'note' ? `NOTE ${noteNumber(mark)}` : esc(markNames[mark.kind]).toUpperCase()}</span><span>“${esc(mark.quote)}”</span>${mark.note ? `<em>${esc(mark.note)}</em>` : ''}</button>`).join('') : '<div class="aside-empty">Your first mark will appear here.</div>'}
       <div class="aside-divider"></div><button class="article-note-button" data-action="article-note"><span class="overline">READING NOTE</span><span>${articleNote ? esc(articleNote) : 'Why did you save this? Add a thought.'}</span>${icon('arrow', 16)}</button>
@@ -547,7 +585,15 @@ function positionMarkers() {
     if (found) {
       const range = document.createRange(); range.setStart(found.node, found.offset); range.setEnd(found.node, Math.min(found.node.length, found.offset + 1));
       const rect = range.getBoundingClientRect();
-      button.style.top = `${Math.max(2, rect.top - wrap.getBoundingClientRect().top + rect.height / 2 - 12)}px`;
+      const lineTop = Math.max(2, rect.top - wrap.getBoundingClientRect().top);
+      button.style.top = `${lineTop + rect.height / 2 - button.offsetHeight / 2}px`;
+      const note = wrap.querySelector('.passage-note');
+      if (note) {
+        if (innerWidth > 1350 && !showReaderMarks) note.style.top = `${lineTop}px`;
+        else note.style.removeProperty('top');
+      }
+      const preview = wrap.querySelector(`[data-note-preview="${mark.id}"]`);
+      if (preview) preview.style.top = `${lineTop}px`;
     }
   }
 }
@@ -572,6 +618,7 @@ async function hydrateReading(id) {
     }));
   } catch (error) {
     item.status = 'needsReview';
+    item.snapshotStored = false;
     item.issue = error.message || 'The saved copy could not be opened.';
     save();
   } finally {
@@ -583,15 +630,23 @@ async function hydrateReading(id) {
 function render() {
   const token = ++bookMountToken;
   if (activeBookView) { activeBookView.close(); activeBookView = null; }
+  if (view === 'reader' && (!reading() || reading().kind === 'book')) {
+    view = 'library'; readerID = null;
+    if (location.hash !== '#/library') history.replaceState(null, '', '#/library');
+  }
   const sameReader = view === 'reader' && lastRenderedReader === readerID && Boolean($('#reading-paper'));
   const previousScroll = sameReader ? window.scrollY : null;
   const item = reading();
-  if (view === 'reader' && item?.status === 'ready' && item.snapshotStored && !item.blocks && !loadingSnapshots.has(item.id)) hydrateReading(item.id);
+  if (view === 'reader' && ['ready', 'needsReview'].includes(item?.status) && item.snapshotStored && !item.blocks && !loadingSnapshots.has(item.id)) hydrateReading(item.id);
   if (view === 'reader') $('#app').innerHTML = readerView();
   else if (view === 'inbox') $('#app').innerHTML = inboxView();
   else if (view === 'marks') $('#app').innerHTML = marksView();
   else $('#app').innerHTML = libraryView();
   positionMarkers();
+  const markerPaper = $('#reading-paper');
+  if (markerPaper && document.fonts) document.fonts.ready.then(() => {
+    if (view === 'reader' && $('#reading-paper') === markerPaper) positionMarkers();
+  });
   if (view === 'reader' && item?.kind === 'book' && item.status === 'ready') mountBookReader(item.id, token);
   if (view === 'reader' && item?.kind !== 'book') {
     if (sameReader) requestAnimationFrame(() => window.scrollTo({ top: previousScroll, behavior: 'instant' }));
@@ -602,6 +657,12 @@ function render() {
 
 function restorePosition() {
   const item = reading(); if (!item) return;
+  if (!$('#reading-paper')) return;
+  if (openInitialReaderAtTop) {
+    openInitialReaderAtTop = false;
+    requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    return;
+  }
   const pending = sessionStorage.getItem('kornu.jump');
   if (pending) {
     sessionStorage.removeItem('kornu.jump');
@@ -628,11 +689,13 @@ function showModal(html) {
 function closeModal() { $('#modal-root').innerHTML = ''; }
 
 function addModal() {
-  showModal(`<div class="modal-overline">ADD TO KORNU</div><button class="modal-close" data-action="close-modal" aria-label="Close">${icon('close')}</button><h2>Bring a reading in.</h2><p>Save an article link or open a book you already have.</p><form id="add-form"><label for="article-url">Article URL</label><input id="article-url" type="url" placeholder="https://example.com/article" required autofocus><div class="modal-actions"><button class="primary-button" type="submit">Save link ${icon('arrow', 16)}</button></div></form><div class="add-divider"><span>OR ADD A BOOK</span></div><label class="book-file-picker" for="book-file">${icon('book', 23)}<span><strong>Choose a book file</strong><small>EPUB, AZW3, MOBI, FB2, or CBZ · up to 50 MB</small></span>${icon('arrow', 16)}</label><input id="book-file" class="book-file-input" type="file" accept=".epub,.azw,.azw3,.mobi,.fb2,.fbz,.cbz"><div class="modal-footnote">Books stay in this browser. When you sign in, Kornu can save them privately to your profile. Protected books may not open.</div>`);
+  showModal(`<div class="modal-overline">ADD TO KORNU</div><button class="modal-close" data-action="close-modal" aria-label="Close">${icon('close')}</button><h2>Bring a reading in.</h2><p>Save an article to read and mark up later.</p><form id="add-form"><label for="article-url">Article URL</label><input id="article-url" type="url" placeholder="https://example.com/article" required autofocus><div class="modal-actions"><button class="primary-button" type="submit">Save link ${icon('arrow', 16)}</button></div></form>`);
 }
 
-function noteModal(mark) {
-  showModal(`<div class="modal-overline">PASSAGE NOTE ${noteNumber(mark)}</div><button class="modal-close" data-action="close-modal" aria-label="Close">${icon('close')}</button><h2>A thought on this line.</h2><blockquote>“${esc(mark.quote)}”</blockquote><form id="note-form" data-id="${esc(mark.id)}"><label for="note-text">Your note</label><textarea id="note-text" rows="6" placeholder="Write what this passage brought to mind…">${esc(mark.note || '')}</textarea><div class="modal-actions"><button type="button" class="danger-link" data-delete-mark="${esc(mark.id)}">Delete note</button><button class="primary-button" type="submit">Save thought ${icon('check', 16)}</button></div></form>`);
+function openPassageNote(mark) {
+  openNoteID = mark.id;
+  render();
+  requestAnimationFrame(() => $('#passage-note-text')?.focus({ preventScroll: true }));
 }
 
 function articleNoteModal() {
@@ -666,9 +729,9 @@ function inspectSelection() {
 function addMark(kind) {
   if (!selection || !reading()) return;
   const mark = { id: uid(), readingID: readerID, kind, ...selection, note: '', createdAt: new Date().toISOString() };
-  store.marks.push(mark); save(readerID); hideSelection(); render();
-  if (kind === 'note') noteModal(mark);
-  else notify(`${markNames[kind]} saved.`);
+  store.marks.push(mark); save(readerID); hideSelection();
+  if (kind === 'note') openPassageNote(mark);
+  else { render(); notify(`${markNames[kind]} saved.`); }
 }
 
 async function importLink(url, existingID = null) {
@@ -681,7 +744,7 @@ async function importLink(url, existingID = null) {
     item = { id: uid(), title: 'New reading', source: new URL(url).hostname.replace(/^www\./, ''), subtitle: '', url, status: 'preparing', issue: '', savedAt: new Date().toISOString(), paragraphs: [], images: [] };
     store.readings.unshift(item);
   }
-  item.status = 'preparing'; item.issue = ''; save(item.id); render(); notify('Preparing your reading…');
+  item.status = 'preparing'; item.issue = ''; save(item.id); route('reader', item.id);
   try {
     const response = await fetch('/api/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
     const data = await response.json();
@@ -800,11 +863,11 @@ async function preloadCovers() {
     const blob = await savedAsset(key).catch(() => null);
     if (blob && generation === accountGeneration) assetURLs.set(key, URL.createObjectURL(blob));
   }));
-  if (generation === accountGeneration && view === 'library') render();
+  if (generation === accountGeneration && (view === 'library' || view === 'reader')) render();
 }
 
 document.addEventListener('click', (event) => {
-  const target = event.target.closest('[data-route],[data-open],[data-action],[data-filter],[data-mark-kind],[data-edit-note],[data-delete-mark],[data-jump],[data-retry],[data-book-href]');
+  const target = event.target.closest('[data-route],[data-open],[data-action],[data-filter],[data-mark-kind],[data-edit-note],[data-close-note],[data-delete-mark],[data-jump],[data-retry],[data-book-href]');
   if (!target) {
     if (event.target.classList.contains('modal-backdrop')) closeModal();
     return;
@@ -814,10 +877,11 @@ document.addEventListener('click', (event) => {
   if (target.dataset.bookHref) { activeBookView?.goTo(target.dataset.bookHref); $('#book-toc').hidden = true; return; }
   if (target.dataset.filter) { filter = target.dataset.filter; render(); return; }
   if (target.dataset.markKind) { addMark(target.dataset.markKind); return; }
-  if (target.dataset.editNote) { const mark = store.marks.find((entry) => entry.id === target.dataset.editNote); if (mark) noteModal(mark); return; }
-  if (target.dataset.deleteMark) { const mark = store.marks.find((entry) => entry.id === target.dataset.deleteMark); store.marks = store.marks.filter((entry) => entry.id !== target.dataset.deleteMark); save(mark?.readingID); closeModal(); render(); notify('Note removed.'); return; }
+  if (target.dataset.editNote) { const mark = store.marks.find((entry) => entry.id === target.dataset.editNote); if (mark) openPassageNote(mark); return; }
+  if (target.hasAttribute('data-close-note')) { openNoteID = null; render(); return; }
+  if (target.dataset.deleteMark) { const mark = store.marks.find((entry) => entry.id === target.dataset.deleteMark); store.marks = store.marks.filter((entry) => entry.id !== target.dataset.deleteMark); openNoteID = null; save(mark?.readingID); closeModal(); render(); notify('Note removed.'); return; }
   if (target.dataset.jump) { jumpTo(target.dataset.jump); return; }
-  if (target.dataset.retry) { const item = store.readings.find((entry) => entry.id === target.dataset.retry); if (item) { route('inbox'); importLink(item.url, item.id); } return; }
+  if (target.dataset.retry) { const item = store.readings.find((entry) => entry.id === target.dataset.retry); if (item) importLink(item.url, item.id); return; }
   const action = target.dataset.action;
   if (action === 'add') addModal();
   else if (action === 'account') accountModal();
@@ -825,6 +889,7 @@ document.addEventListener('click', (event) => {
   else if (action === 'sign-out') cloud.signOut().then(() => { closeModal(); switchAccount(null); }).catch((error) => notify(error.message || 'Sign out failed.'));
   else if (action === 'copy-browser-library') copyBrowserLibrary();
   else if (action === 'close-modal') closeModal();
+  else if (action === 'close-reader') { hideSelection(); location.hash = '#/library'; }
   else if (action === 'focus-search') { if (view === 'reader') route('library'); requestAnimationFrame(() => $('#library-search')?.focus()); }
   else if (action === 'toggle-marks') { showReaderMarks = !showReaderMarks; render(); }
   else if (action === 'article-note') articleNoteModal();
@@ -839,17 +904,19 @@ document.addEventListener('submit', (event) => {
   event.preventDefault();
   if (event.target.id === 'add-form') {
     const url = $('#article-url').value.trim();
-    if (store.readings.some((item) => item.url === url && !item.id.startsWith('sample-'))) { closeModal(); notify('This link is already in your library.'); return; }
-    closeModal(); route('inbox'); importLink(url);
-  } else if (event.target.id === 'note-form') {
-    const mark = store.marks.find((entry) => entry.id === event.target.dataset.id);
-    if (mark) { mark.note = $('#note-text').value.trim(); save(mark.readingID); closeModal(); render(); notify('Thought saved.'); }
+    const existing = store.readings.find((item) => item.url === url && !item.id.startsWith('sample-'));
+    if (existing) { closeModal(); route('reader', existing.id); return; }
+    closeModal(); importLink(url);
   } else if (event.target.id === 'article-note-form') {
     store.articleNotes[readerID] = $('#article-note-text').value.trim(); save(readerID); closeModal(); render(); notify('Reading note saved.');
   }
 });
 
 document.addEventListener('input', (event) => {
+  if (event.target.id === 'passage-note-text') {
+    const mark = store.marks.find((entry) => entry.id === event.target.closest('[data-note-id]')?.dataset.noteId);
+    if (mark) { mark.note = event.target.value; save(mark.readingID); $('.passage-note-status').textContent = account ? 'Saved here; syncing if connected' : 'Saved in this browser'; }
+  }
   if (event.target.id === 'library-search') {
     search = event.target.value;
     const caret = event.target.selectionStart;
@@ -858,16 +925,19 @@ document.addEventListener('input', (event) => {
   }
 });
 document.addEventListener('change', (event) => {
+  if (event.target.id === 'status-filter') { filter = event.target.value; render(); }
   if (event.target.id === 'book-file') importBookFile(event.target.files?.[0]);
 });
 
 document.addEventListener('mouseup', () => setTimeout(inspectSelection, 0));
 document.addEventListener('touchend', () => setTimeout(inspectSelection, 180), { passive: true });
 document.addEventListener('keyup', (event) => {
-  if (event.key === 'Escape') { closeModal(); hideSelection(); return; }
+  if (event.key === 'Escape') { closeModal(); hideSelection(); if (openNoteID) { openNoteID = null; render(); } return; }
   if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Shift') setTimeout(inspectSelection, 0);
 });
 document.addEventListener('keydown', (event) => {
+  if (event.target.id === 'passage-note-text' && (event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); openNoteID = null; render(); return; }
+  if (!['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName) && !event.metaKey && !event.ctrlKey && event.key.toLowerCase() === 'n' && selection) { event.preventDefault(); addMark('note'); return; }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); if (view === 'reader') route('library'); requestAnimationFrame(() => $('#library-search')?.focus()); }
   if (activeBookView && !$('#modal-root').children.length && !['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) {
     if (event.key === 'ArrowLeft') { event.preventDefault(); activeBookView.goLeft(); }
@@ -889,9 +959,15 @@ window.addEventListener('hashchange', () => {
   view = ['inbox', 'library', 'marks', 'reader'].includes(parts[1]) ? parts[1] : 'library';
   readerID = view === 'reader' ? parts[2] : null;
   selection = null; $('#selection-menu').hidden = true;
+  openNoteID = null;
   window.scrollTo({ top: 0, behavior: 'instant' }); render();
 });
 
+if (view === 'library' && matchMedia('(min-width: 1251px)').matches) {
+  const selected = visibleReadings().find((item) => item.status === 'ready' && (store.progress[item.id] || 0) > 0 && (store.progress[item.id] || 0) < 100)
+    || visibleReadings().find((item) => item.status === 'ready');
+  if (selected) { view = 'reader'; readerID = selected.id; openInitialReaderAtTop = true; history.replaceState(null, '', `#/reader/${selected.id}`); }
+}
 render();
 preloadCovers();
 if (cloud.configured) {

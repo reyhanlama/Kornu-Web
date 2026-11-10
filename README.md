@@ -10,6 +10,16 @@ npm start
 
 Open `http://127.0.0.1:4173` in a browser. Node 20 or newer is required. Set `PORT` to use another port. The server binds to localhost by default. To test without running a hosted service, clone this repository and run the command above from its root.
 
+## Clip articles from Chrome
+
+The first browser extension lives in [`extension/`](extension/), inside this repository. It does not need a separate project or an account. In Chrome, open `chrome://extensions`, turn on **Developer mode**, choose **Load unpacked**, and select this repository's `extension` folder. Pin **Kornu Clipper** if you want it visible in the toolbar.
+
+Open a public article, click the Kornu icon, and choose **Save to Kornu**. Local preview access is included in the extension; for a deployed Kornu site, Chrome asks for access on the first save so the popup can read the capture status. Normally, Kornu captures in a background tab while the popup shows the actual saving stage. When it finishes, the background tab closes and the popup offers **Open reading**. Browsers that require extension-created tabs to be active open Kornu directly instead; capture continues in the reading tab. If the article needs review, Kornu says so. A link already in that library returns its existing reading. The extension clips the page URL; it does not copy the page's DOM or bypass sites that block Kornu's importer.
+
+The extension's **Kornu site** field defaults to `http://127.0.0.1:4174/` for the current local preview. Change it once to `http://127.0.0.1:4173/` if using the default local server, or to your deployed Kornu origin. The choice is stored in the extension on this browser. Guest readings stay in the browser profile that opens Kornu. If profile storage is configured and you are signed in, the reading goes to that profile after it loads.
+
+After changing extension files locally, use **Reload** on the Kornu Clipper card in `chrome://extensions` before testing the updated popup. Chrome caches the manifest until this step; refreshing the article or Kornu tab does not update extension permissions. If Chrome reports “Only permissions specified in the manifest may be requested,” reload the extension and reopen its popup.
+
 ## Deploy on Netlify
 
 Connect this repository to a Netlify site and deploy the `main` branch. The checked-in `netlify.toml` sets the publish directory to `public`, runs the project checks and account client build, and bundles the article capture function. Keep the base directory at the repository root. Netlify installs the npm dependencies and uses Node 24 from `.nvmrc`.

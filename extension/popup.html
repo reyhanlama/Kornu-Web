@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Save to Kornu</title>
+    <link rel="stylesheet" href="popup.css">
+    <script src="popup.js" defer></script>
+  </head>
+  <body>
+    <main class="clipper">
+      <header class="masthead">
+        <img src="wordmark.svg" alt="Kornu" width="112" height="34">
+        <span>CLIPPER</span>
+      </header>
+
+      <section class="clip-content" aria-labelledby="page-title">
+        <p class="section-label"><span class="label-dot" aria-hidden="true"></span>CURRENT PAGE</p>
+        <h1 id="page-title">Reading this tab…</h1>
+        <p class="page-host" id="page-host"></p>
+        <button id="save" type="button" disabled>
+          <span class="save-label">Save to Kornu</span>
+          <span class="save-symbol" aria-hidden="true">↗</span>
+        </button>
+        <p id="message" role="status" aria-live="polite"></p>
+      </section>
+
+      <details class="site-settings">
+        <summary><span>Saving to <strong id="site-name">Kornu web</strong></span><span class="change-label">Change <span aria-hidden="true">⌄</span></span></summary>
+        <div class="site-settings-body">
+          <label for="site-url">Kornu web address</label>
+          <input id="site-url" type="url" spellcheck="false" placeholder="https://your-site.netlify.app/">
+          <p>Choose where this browser opens your library.</p>
+        </div>
+      </details>
+    </main>
+  </body>
+</html>

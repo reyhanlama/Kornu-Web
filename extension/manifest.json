@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Kornu Clipper",
+  "description": "Save the page in your current tab to Kornu without leaving it.",
+  "version": "0.2.2",
+  "permissions": ["activeTab", "storage", "scripting"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "icons": {
+    "16": "icon-16.png",
+    "32": "icon-32.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icon-16.png",
+      "32": "icon-32.png"
+    },
+    "default_title": "Save to Kornu",
+    "default_popup": "popup.html"
+  }
+}

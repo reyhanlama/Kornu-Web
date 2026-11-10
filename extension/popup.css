@@ -1,0 +1,59 @@
+:root {
+  --forest: #321b39;
+  --ink: #32243a;
+  --muted: #766c78;
+  --paper: #fffcfa;
+  --canvas: #f8f6f7;
+  --line: #e9e3e9;
+  --terra: #e76232;
+  color: var(--ink);
+  background: var(--canvas);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+body { width: 348px; margin: 0; }
+button, input { font: inherit; }
+
+.clipper { padding: 21px 24px 0; }
+.masthead { display: flex; align-items: center; justify-content: space-between; padding-bottom: 21px; border-bottom: 1px solid var(--line); }
+.masthead img { display: block; width: 112px; height: auto; filter: brightness(0) saturate(100%) invert(13%) sepia(21%) saturate(1620%) hue-rotate(257deg) brightness(88%); }
+.masthead > span { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .16em; }
+
+.clip-content { padding: 25px 0 20px; animation: arrive .3s ease-out both; }
+.section-label { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .14em; }
+.label-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--terra); }
+h1 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; min-height: 33px; margin: 0; color: var(--forest); font-family: Georgia, serif; font-size: 27px; font-weight: 500; letter-spacing: -.035em; line-height: 1.16; overflow-wrap: anywhere; }
+.page-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 13px 0 26px; color: var(--muted); font-size: 12px; }
+
+#save { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 48px; padding: 0 17px; border: 0; border-radius: 7px; background: var(--terra); color: #fff; cursor: pointer; font-size: 13px; font-weight: 700; text-align: left; transition: background-color .18s ease, transform .18s ease; }
+#save:hover:not(:disabled) { background: #df5324; transform: translateY(-1px); }
+#save:active:not(:disabled) { transform: translateY(0); }
+#save:disabled { cursor: default; opacity: .55; }
+#save.is-saved { background: var(--forest); }
+#save.is-saved:hover:not(:disabled) { background: #492d51; }
+.save-symbol { display: grid; place-items: center; width: 20px; height: 20px; font-size: 20px; font-weight: 400; line-height: 1; transition: transform .18s ease; }
+#save:hover:not(:disabled) .save-symbol { transform: translate(2px, -2px); }
+#save.is-saving .save-symbol { width: 15px; height: 15px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%; font-size: 0; animation: spin .7s linear infinite; }
+#save.is-saving:disabled { opacity: 1; }
+#message { min-height: 15px; margin: 9px 0 0; color: #a43d30; font-size: 11px; line-height: 1.4; }
+#message:empty { visibility: hidden; }
+#message.is-success { color: var(--forest); }
+
+.site-settings { margin: 0 -24px; padding: 0 24px; border-top: 1px solid var(--line); }
+.site-settings summary { display: flex; align-items: center; justify-content: space-between; min-height: 51px; color: var(--muted); cursor: pointer; font-size: 11px; list-style: none; }
+.site-settings summary::-webkit-details-marker { display: none; }
+.site-settings summary strong { color: var(--forest); font-weight: 600; }
+.change-label { color: var(--forest); font-weight: 600; }
+.change-label span { display: inline-block; margin-left: 3px; transition: transform .18s ease; }
+.site-settings[open] .change-label span { transform: rotate(180deg); }
+.site-settings-body { padding: 0 0 20px; }
+.site-settings label { display: block; margin-bottom: 7px; color: var(--forest); font-size: 11px; font-weight: 600; }
+.site-settings input { width: 100%; min-height: 39px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--forest); font-size: 12px; }
+.site-settings-body p { margin: 8px 0 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
+#save:focus-visible, summary:focus-visible, input:focus-visible { outline: 2px solid var(--terra); outline-offset: 3px; }
+
+@keyframes arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }

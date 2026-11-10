@@ -57,6 +57,13 @@ let uploadedAssets = new Set();
 let syncTimer;
 let syncing = false;
 let accountGeneration = 0;
+let profileLoadPromise = Promise.resolve();
+let clipReady = !cloud.configured;
+const clipFromHash = () => location.hash.startsWith('#/clip?') ? new URLSearchParams(location.hash.slice(7)).get('url') : null;
+let pendingClipURL = clipFromHash();
+if (pendingClipURL) document.documentElement.dataset.kornuClipState = 'initializing';
+let arrivingClipID = null;
+let clipPendingSync = null;
 const changeVersions = new Map();
 let view = location.hash.match(/^#\/(inbox|library|marks|reader)/)?.[1] || 'library';
 let readerID = location.hash.match(/^#\/reader\/([^/]+)/)?.[1] || null;
@@ -225,12 +232,20 @@ async function flushCloudSync() {
       if ((changeVersions.get(readingID) || 0) === version) {
         dirtyReadings.delete(readingID);
         persistPending();
+        if (clipPendingSync?.id === readingID) {
+          document.documentElement.dataset.kornuClipState = clipPendingSync.state;
+          clipPendingSync = null;
+        }
       }
     }
     if (account?.id === userID) setCloudStatus(dirtyReadings.size ? 'Saved here; waiting to sync' : 'Saved to your profile');
   } catch (error) {
     if (account?.id === userID) {
       setCloudStatus('Saved here; cloud sync paused');
+      if (clipPendingSync) {
+        document.documentElement.dataset.kornuClipState = `${clipPendingSync.state}-local`;
+        clipPendingSync = null;
+      }
       notify(error.message || 'Cloud sync is unavailable right now.');
     }
   } finally {
@@ -294,7 +309,7 @@ async function loadProfile(userID, generation) {
 }
 
 function switchAccount(user) {
-  if (account?.id === user?.id) return;
+  if (account?.id === user?.id) return profileLoadPromise;
   const generation = ++accountGeneration;
   clearTimeout(syncTimer);
   for (const url of assetURLs.values()) URL.revokeObjectURL(url);
@@ -310,7 +325,8 @@ function switchAccount(user) {
   location.hash = '#/library';
   render();
   preloadCovers();
-  if (user) loadProfile(user.id, generation);
+  profileLoadPromise = user ? loadProfile(user.id, generation) : Promise.resolve();
+  return profileLoadPromise;
 }
 
 function hasGuestLibrary() {
@@ -548,7 +564,7 @@ function readerView() {
   const item = reading();
   if (!item) return libraryView();
   if (item.status === 'preparing') {
-    return shell(`<div class="reader-layout reader-pending"><div class="reader-main"><div class="reader-toolbar"><button class="back-button" data-route="library">${icon('back', 17)} Library</button><a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer" class="plain-button">Original ${icon('external', 15)}</a></div><article class="paper pending-paper" aria-busy="true" aria-live="polite"><div class="article-overline">${esc(item.source)}</div><h1>Opening your reading.</h1><p class="pending-description">Kornu is preparing the article and saving its images. You can keep reading here when it is ready.</p><div class="pending-lines" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div></article></div></div>`, 'Opening reading', 'Library');
+    return shell(`<div class="reader-layout reader-pending"><div class="reader-main"><div class="reader-toolbar"><button class="back-button" data-route="library">${icon('back', 17)} Library</button><a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer" class="plain-button">Original ${icon('external', 15)}</a></div><article class="paper pending-paper" aria-busy="true" aria-live="polite"><div class="article-overline">${esc(item.source)}</div><h1>Saving your reading.</h1><p class="pending-description">Preparing the article's text and images. It will open here when ready.</p><div class="pending-lines" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div></article></div></div>`, 'Saving reading', 'Library');
   }
   if (item.status !== 'ready' && !(item.status === 'needsReview' && item.snapshotStored)) {
     return shell(`<div class="content-wrap"><div class="reader-back"><button class="back-button" data-route="inbox">${icon('back', 16)} Back to Inbox</button></div><div class="review-screen"><div class="eyebrow">NEEDS REVIEW</div><h1>${esc(item.title)}</h1><p>${esc(item.issue || 'Kornu could not prepare this link.')}</p><div class="review-actions"><button class="primary-button" data-retry="${esc(item.id)}">Try again</button><a class="outline-button" href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">Open original ${icon('external', 16)}</a></div></div></div>`, 'Review', 'Inbox');
@@ -560,8 +576,10 @@ function readerView() {
   const itemMarks = marksFor(item.id);
   const count = itemMarks.length;
   const articleNote = store.articleNotes[item.id] || '';
+  const arrivalClass = arrivingClipID === item.id ? ' clip-arrival' : '';
+  if (arrivalClass) arrivingClipID = null;
   return shell(`<div class="reader-layout"><div class="reader-main"><div class="reader-toolbar"><button class="back-button" data-action="close-reader">${icon('back', 17)} Back</button><span class="reader-toolbar-source">${esc(item.source)}</span><div class="reader-toolbar-right"><a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer" class="plain-button">Original article ${icon('external', 15)}</a>${item.source !== 'Kornu sample' ? `<button class="plain-button recapture-button" data-retry="${esc(item.id)}" title="Capture this article again">${icon('download', 15)}<span>Recapture</span></button>` : ''}<button class="plain-button" data-action="toggle-marks">${icon('mark', 16)} Marks <span class="toolbar-count">${count}</span></button></div></div>
-    <article class="paper" id="reading-paper"><div class="article-overline">SAVED ${day(item.savedAt).toUpperCase()}</div><h1>${esc(item.title)}</h1><div class="article-meta"><span>${minutes(item)} min read</span><i aria-hidden="true"></i><span>${esc(item.source)}</span></div>${item.byline ? `<div class="article-byline">By ${esc(item.byline)}</div>` : ''}${item.subtitle ? `<p class="article-deck">${esc(item.subtitle)}</p>` : ''}${item.issue ? `<div class="capture-notice" role="status"><strong>This copy may be incomplete.</strong><p>${esc(item.issue)}</p><div class="capture-notice-actions"><a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">Open original ${icon('external', 14)}</a><button data-retry="${esc(item.id)}">Retry capture ${icon('arrow', 14)}</button></div></div>` : ''}<div class="article-rule"></div><div class="article-body">${item.blocks ? item.blocks.map((block) => articleBlock(item, block)).join('') : item.paragraphs.map((paragraph, index) => articleParagraph(item, paragraph, index)).join('')}</div><div class="article-end"><span class="end-mark">✳</span><p>You reached the end of this reading.</p><button class="text-link" data-action="finish">Mark as finished ${icon('check', 15)}</button></div></article></div>
+    <article class="paper${arrivalClass}" id="reading-paper"><div class="article-overline">SAVED ${day(item.savedAt).toUpperCase()}</div><h1>${esc(item.title)}</h1><div class="article-meta"><span>${minutes(item)} min read</span><i aria-hidden="true"></i><span>${esc(item.source)}</span></div>${item.byline ? `<div class="article-byline">By ${esc(item.byline)}</div>` : ''}${item.subtitle ? `<p class="article-deck">${esc(item.subtitle)}</p>` : ''}${item.issue ? `<div class="capture-notice" role="status"><strong>This copy may be incomplete.</strong><p>${esc(item.issue)}</p><div class="capture-notice-actions"><a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">Open original ${icon('external', 14)}</a><button data-retry="${esc(item.id)}">Retry capture ${icon('arrow', 14)}</button></div></div>` : ''}<div class="article-rule"></div><div class="article-body">${item.blocks ? item.blocks.map((block) => articleBlock(item, block)).join('') : item.paragraphs.map((paragraph, index) => articleParagraph(item, paragraph, index)).join('')}</div><div class="article-end"><span class="end-mark">✳</span><p>You reached the end of this reading.</p><button class="text-link" data-action="finish">Mark as finished ${icon('check', 15)}</button></div></article></div>
     <aside class="reader-aside ${showReaderMarks ? '' : 'reader-aside-hidden'}"><div class="aside-inner"><div class="aside-heading"><span class="overline">THIS READING</span><button class="aside-close" data-action="toggle-marks" aria-label="Close marks">${icon('close', 16)}</button></div><h2>Room for thought.</h2><p class="aside-subtitle">Select a passage to highlight, underline, or leave a note.</p><div class="aside-divider"></div><div class="aside-section-heading"><strong>Your marks</strong><span>${count}</span></div>
       ${itemMarks.length ? itemMarks.map((mark) => `<button class="aside-mark" data-jump="${esc(mark.id)}"><span class="aside-mark-type">${mark.kind === 'note' ? `NOTE ${noteNumber(mark)}` : esc(markNames[mark.kind]).toUpperCase()}</span><span>“${esc(mark.quote)}”</span>${mark.note ? `<em>${esc(mark.note)}</em>` : ''}</button>`).join('') : '<div class="aside-empty">Your first mark will appear here.</div>'}
       <div class="aside-divider"></div><button class="article-note-button" data-action="article-note"><span class="overline">READING NOTE</span><span>${articleNote ? esc(articleNote) : 'Why did you save this? Add a thought.'}</span>${icon('arrow', 16)}</button>
@@ -734,7 +752,7 @@ function addMark(kind) {
   else { render(); notify(`${markNames[kind]} saved.`); }
 }
 
-async function importLink(url, existingID = null) {
+async function importLink(url, existingID = null, fromClip = false) {
   if (existingID && (marksFor(existingID).length || store.articleNotes[existingID])) {
     existingID = null;
     notify('Making a new copy so your existing marks stay in place.');
@@ -745,6 +763,7 @@ async function importLink(url, existingID = null) {
     store.readings.unshift(item);
   }
   item.status = 'preparing'; item.issue = ''; save(item.id); route('reader', item.id);
+  if (fromClip) document.documentElement.dataset.kornuClipState = 'capturing';
   try {
     const response = await fetch('/api/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
     const data = await response.json();
@@ -755,6 +774,7 @@ async function importLink(url, existingID = null) {
     }
     const blocks = data.blocks || [];
     const pictures = blocks.filter((block) => block.kind === 'image');
+    if (fromClip) document.documentElement.dataset.kornuClipState = 'images';
     let cursor = 0, failed = 0, coverAssetKey = null;
     async function worker() {
       while (cursor < pictures.length) {
@@ -783,7 +803,37 @@ async function importLink(url, existingID = null) {
     });
     notify(item.status === 'ready' ? `Reading saved${pictures.length ? ` with ${pictures.length - failed} images` : ''}.` : 'Only a preview was found.');
   } catch (error) { item.status = 'needsReview'; item.issue = error.message || 'Import failed.'; notify('This link needs review.'); }
+  if (fromClip && item.status === 'ready') arrivingClipID = item.id;
   save(item.id); render();
+  if (fromClip) {
+    document.documentElement.dataset.kornuClipReadingId = item.id;
+    const finalState = item.status === 'ready' ? 'saved' : 'review';
+    if (account) {
+      clipPendingSync = { id: item.id, state: finalState };
+      document.documentElement.dataset.kornuClipState = 'syncing';
+    } else document.documentElement.dataset.kornuClipState = finalState;
+  }
+}
+
+function importPendingClip() {
+  if (!clipReady || !pendingClipURL) return;
+  const rawURL = pendingClipURL;
+  pendingClipURL = null;
+  if (location.hash.startsWith('#/clip?')) history.replaceState(null, '', '#/library');
+  let url;
+  try {
+    url = new URL(rawURL);
+    if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Invalid article link.');
+  } catch { document.documentElement.dataset.kornuClipState = 'invalid'; notify('This clip does not contain a valid article link.'); return; }
+  const existing = store.readings.find((item) => item.url === url.href && !item.id.startsWith('sample-'));
+  if (existing) {
+    route('reader', existing.id);
+    document.documentElement.dataset.kornuClipReadingId = existing.id;
+    document.documentElement.dataset.kornuClipState = existing.status === 'ready' ? 'saved' : 'review';
+    notify('Already in your library.');
+    return;
+  }
+  importLink(url.href, null, true);
 }
 
 async function importBookFile(file) {
@@ -955,12 +1005,13 @@ window.addEventListener('scroll', () => {
   }, 400);
 }, { passive: true });
 window.addEventListener('hashchange', () => {
+  pendingClipURL = clipFromHash() || pendingClipURL;
   const parts = location.hash.split('/');
   view = ['inbox', 'library', 'marks', 'reader'].includes(parts[1]) ? parts[1] : 'library';
   readerID = view === 'reader' ? parts[2] : null;
   selection = null; $('#selection-menu').hidden = true;
   openNoteID = null;
-  window.scrollTo({ top: 0, behavior: 'instant' }); render();
+  window.scrollTo({ top: 0, behavior: 'instant' }); render(); importPendingClip();
 });
 
 if (view === 'library' && matchMedia('(min-width: 1251px)').matches) {
@@ -972,6 +1023,6 @@ render();
 preloadCovers();
 if (cloud.configured) {
   cloud.onAuthChange((user) => switchAccount(user));
-  cloud.session().then((session) => switchAccount(session?.user || null))
+  cloud.session().then((session) => switchAccount(session?.user || null)).then(() => { clipReady = true; importPendingClip(); })
     .catch((error) => notify(error.message || 'Your account could not be opened.'));
-}
+} else importPendingClip();

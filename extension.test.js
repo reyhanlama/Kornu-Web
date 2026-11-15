@@ -10,7 +10,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 function popup(tab, state = { state: 'saved', readingID: 'reading-1' }, permissionAllowed = true, loadedManifest = manifest, inactiveTabError = null) {
   const dom = new JSDOM(html, { url: 'https://kornu.test/', runScripts: 'outside-only' });
-  const calls = { opened: [], saved: [], checked: [], requested: [], removed: [], closed: 0 };
+  const calls = { opened: [], saved: [], checked: [], requested: [], removed: [], updated: [], closed: 0 };
   dom.window.chrome = {
     runtime: { getManifest: () => loadedManifest },
     storage: { local: {
@@ -25,7 +25,7 @@ function popup(tab, state = { state: 'saved', readingID: 'reading-1' }, permissi
         return { id: 42 };
       },
       remove: async (id) => { calls.removed.push(id); },
-      update: async () => {}
+      update: async (id, value) => { calls.updated.push({ id, value }); }
     },
     permissions: {
       contains: async (value) => {
@@ -49,7 +49,7 @@ test('clipper captures in a background Kornu tab and offers to open the saved re
   const { document, calls } = popup({ url: 'https://example.com/article?a=1#section', title: 'An article' });
   await tick();
   assert.equal(document.querySelector('#page-title').textContent, 'An article');
-  assert.equal(document.querySelector('#site-url').value, 'http://127.0.0.1:4174/');
+  assert.equal(document.querySelector('#site-url').value, 'https://kornu.netlify.app/');
   assert.equal(document.querySelector('.destination-label').textContent, 'Kornu library');
   assert.equal(document.querySelector('#save').disabled, false);
 
@@ -57,11 +57,11 @@ test('clipper captures in a background Kornu tab and offers to open the saved re
   await tick();
   assert.equal(calls.opened.length, 1);
   const opened = new URL(calls.opened[0].url);
-  assert.equal(opened.origin, 'http://127.0.0.1:4174');
+  assert.equal(opened.origin, 'https://kornu.netlify.app');
   assert.equal(calls.opened[0].active, false);
   assert.equal(new URLSearchParams(opened.hash.slice(7)).get('url'), 'https://example.com/article?a=1#section');
-  assert.equal(calls.saved[0].kornuSiteURL, 'http://127.0.0.1:4174/');
-  assert.deepEqual(Array.from(calls.checked[0].origins), ['http://127.0.0.1/*']);
+  assert.equal(calls.saved[0].kornuSiteURL, 'https://kornu.netlify.app/');
+  assert.deepEqual(Array.from(calls.checked[0].origins), ['https://kornu.netlify.app/*']);
   assert.equal(calls.requested.length, 0);
   assert.deepEqual(calls.removed, [42]);
   assert.equal(document.querySelector('.save-label').textContent, 'Open reading');
@@ -71,7 +71,7 @@ test('clipper captures in a background Kornu tab and offers to open the saved re
 
   document.querySelector('#save').click();
   await tick();
-  assert.equal(calls.opened[1].url, 'http://127.0.0.1:4174/#/reader/reading-1');
+  assert.equal(calls.opened[1].url, 'https://kornu.netlify.app/#/reader/reading-1');
   assert.equal(calls.opened[1].active, true);
 });
 
@@ -90,7 +90,39 @@ test('changing the destination after saving keeps the current reading link', asy
   assert.match(document.querySelector('#site-hint').textContent, /saved for your next clip/);
   document.querySelector('#save').click();
   await tick();
-  assert.equal(calls.opened.at(-1).url, 'http://127.0.0.1:4174/#/reader/reading-1');
+  assert.equal(calls.opened.at(-1).url, 'https://kornu.netlify.app/#/reader/reading-1');
+});
+
+test('clipper waits for sign-in and reuses the pending Kornu tab', async () => {
+  const { document, calls } = popup(
+    { url: 'https://example.com/article', title: 'Article' },
+    { state: 'auth-required' }
+  );
+  await tick();
+  document.querySelector('#save').click();
+  await tick();
+  assert.equal(document.querySelector('#page-title').textContent, 'Sign in to save.');
+  assert.equal(document.querySelector('.save-label').textContent, 'Continue in Kornu');
+  assert.match(document.querySelector('#message').textContent, /article is waiting/);
+  assert.deepEqual(calls.removed, []);
+  document.querySelector('#save').click();
+  await tick();
+  assert.equal(calls.updated.length, 1);
+  assert.equal(calls.updated[0].id, 42);
+  assert.equal(calls.updated[0].value.active, true);
+  assert.equal(calls.closed, 1);
+});
+
+test('clipper explains when the selected Kornu site has no account setup', async () => {
+  const { document, calls } = popup(
+    { url: 'https://example.com/article', title: 'Article' },
+    { state: 'setup-required' }
+  );
+  await tick();
+  document.querySelector('#save').click();
+  await tick();
+  assert.match(document.querySelector('#message').textContent, /needs account storage set up/);
+  assert.equal(calls.removed[0], 42);
 });
 
 test('clipper opens an active Kornu reading when the browser disallows hidden tabs', async () => {

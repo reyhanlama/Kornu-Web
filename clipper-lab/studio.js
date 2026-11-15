@@ -11,12 +11,13 @@ const fields = {
 const defaults = {
   articleTitle: 'The art of paying attention',
   articleURL: 'https://example.com/journal/the-art-of-paying-attention',
-  siteURL: 'http://127.0.0.1:4174/'
+  siteURL: 'https://kornu.netlify.app/'
 };
 const titles = {
   long: 'How small observations turn into ideas that stay with us long after we close the browser',
   review: 'A page that needs a closer look',
   local: 'The art of paying attention',
+  auth: 'The art of paying attention',
   permission: 'The art of paying attention',
   active: 'The art of paying attention'
 };
@@ -96,7 +97,7 @@ window.addEventListener('message', (event) => {
   if (event.data.state === 'handoff') handoff.hidden = false;
   if (event.data.state === 'capturing') selectStage('capturing');
   else if (event.data.state === 'images') selectStage('images');
-  else if (['saved', 'saved-local', 'review', 'review-local', 'permission', 'handoff'].includes(event.data.state)) selectStage('result');
+  else if (['saved', 'saved-local', 'review', 'review-local', 'auth-required', 'permission', 'handoff'].includes(event.data.state)) selectStage('result');
 });
 
 document.querySelectorAll('.scenario').forEach((button) => button.addEventListener('click', () => selectScenario(button.dataset.scenario)));

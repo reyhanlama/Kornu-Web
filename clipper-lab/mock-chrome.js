@@ -10,13 +10,17 @@ function startCapture() {
   for (const timer of timers) clearTimeout(timer);
   if (preview.previewStage && preview.previewStage !== 'auto') {
     clipState = preview.previewStage === 'result'
-      ? preview.scenario === 'review' ? 'review' : preview.scenario === 'local' ? 'saved-local' : 'saved'
+      ? preview.scenario === 'auth' ? 'auth-required' : preview.scenario === 'review' ? 'review' : preview.scenario === 'local' ? 'saved-local' : 'saved'
       : preview.previewStage;
     announce(`Holding the ${preview.previewStage} state`, clipState);
     return;
   }
   clipState = 'initializing';
   announce('Opening the Kornu library', clipState);
+  if (preview.scenario === 'auth') {
+    timers = [setTimeout(() => { clipState = 'auth-required'; announce('Sign-in required', clipState); }, 350)];
+    return;
+  }
   const stages = [
     [350, 'capturing', 'Preparing article text'],
     [1200, 'images', 'Saving article images'],
@@ -36,7 +40,7 @@ window.chrome = {
     set: async (value) => { savedSiteURL = value.kornuSiteURL; announce(`Destination set to ${savedSiteURL}`); }
   } },
   permissions: {
-    contains: async ({ origins }) => preview.scenario !== 'permission' && /^http:\/\/(127\.0\.0\.1|localhost)\//.test(origins[0]),
+    contains: async ({ origins }) => preview.scenario !== 'permission' && (/^http:\/\/(127\.0\.0\.1|localhost)\//.test(origins[0]) || origins[0] === 'https://kornu.netlify.app/*'),
     request: async () => {
       const allowed = preview.scenario !== 'permission';
       announce(allowed ? 'Site access granted' : 'Site access declined', allowed ? '' : 'permission');

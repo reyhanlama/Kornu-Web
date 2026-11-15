@@ -51,6 +51,7 @@ const readStore = (key = STORE_KEY) => {
 let store = readStore();
 let activeStoreKey = STORE_KEY;
 let account = null;
+let authReady = false;
 let cloudStatus = 'Saved in this browser';
 let dirtyReadings = new Set();
 let uploadedAssets = new Set();
@@ -58,10 +59,11 @@ let syncTimer;
 let syncing = false;
 let accountGeneration = 0;
 let profileLoadPromise = Promise.resolve();
-let clipReady = !cloud.configured;
+let clipReady = false;
 const clipFromHash = () => location.hash.startsWith('#/clip?') ? new URLSearchParams(location.hash.slice(7)).get('url') : null;
-let pendingClipURL = clipFromHash();
-if (pendingClipURL) document.documentElement.dataset.kornuClipState = 'initializing';
+let pendingClipURL = clipFromHash() || sessionStorage.getItem('kornu.pendingClip');
+if (pendingClipURL) sessionStorage.setItem('kornu.pendingClip', pendingClipURL);
+if (pendingClipURL) document.documentElement.dataset.kornuClipState = cloud.configured ? 'initializing' : 'setup-required';
 let arrivingClipID = null;
 let clipPendingSync = null;
 const changeVersions = new Map();
@@ -177,6 +179,12 @@ function shell(content, title, kicker = '') {
     <div class="workspace"><main class="main-content">${main}</main></div>
     <nav class="mobile-nav" aria-label="Primary mobile">${navItem('library', 'Library', 'book')}${navItem('inbox', 'Inbox', 'tray')}${navItem('marks', 'Marks', 'mark')}</nav>
   </div>`;
+}
+
+function accessView() {
+  const loading = cloud.configured && !authReady;
+  const setup = !cloud.configured;
+  return `<main class="access-screen"><div class="access-inner"><div class="access-brand"><img src="/wordmark.svg" alt="Kornu"><span>Your reading space</span></div><div class="access-copy"><div class="eyebrow">${loading ? 'OPENING KORNU' : setup ? 'ACCOUNT SETUP NEEDED' : 'WELCOME TO KORNU'}</div><h1>${loading ? 'Opening your library.' : setup ? 'Kornu needs its account connection.' : 'A place for everything worth reading.'}</h1><p>${loading ? 'Checking your profile…' : setup ? 'Connect the Supabase project to use Kornu.' : pendingClipURL ? 'Sign in to save the article you just clipped. We’ll continue the capture after you return.' : 'Save articles, make your marks, and find your thoughts again.'}</p>${!loading && !setup ? `<button class="access-signin" data-action="sign-in-google">Continue with Google ${icon('arrow', 19)}</button><small>Your readings and notes stay with your profile.</small>` : ''}</div><div class="access-footer"><span>Collect.</span><span>Read.</span><span>Remember.</span></div></div></main>`;
 }
 
 function loadSet(key) {
@@ -322,7 +330,8 @@ async function loadProfile(userID, generation) {
 }
 
 function switchAccount(user) {
-  if (account?.id === user?.id) return profileLoadPromise;
+  if (authReady && account?.id === user?.id) return profileLoadPromise;
+  authReady = true;
   const generation = ++accountGeneration;
   clearTimeout(syncTimer);
   for (const url of assetURLs.values()) URL.revokeObjectURL(url);
@@ -334,11 +343,12 @@ function switchAccount(user) {
   uploadedAssets = user ? loadSet(uploadedStoreKey(user.id)) : new Set();
   changeVersions.clear();
   cloudStatus = user ? 'Loading your profile…' : 'Saved in this browser';
+  if (!user && pendingClipURL) document.documentElement.dataset.kornuClipState = 'auth-required';
   view = 'library'; readerID = null;
   location.hash = '#/library';
   render();
   preloadCovers();
-  profileLoadPromise = user ? loadProfile(user.id, generation) : Promise.resolve();
+  profileLoadPromise = user ? loadProfile(user.id, generation).then(() => { if (clipReady) importPendingClip(); }) : Promise.resolve();
   return profileLoadPromise;
 }
 
@@ -661,6 +671,10 @@ async function hydrateReading(id) {
 }
 
 function render() {
+  if (!cloud.configured || !authReady || !account) {
+    $('#app').innerHTML = accessView();
+    return;
+  }
   const token = ++bookMountToken;
   if (activeBookView) { activeBookView.close(); activeBookView = null; }
   if (view === 'reader' && (!reading() || reading().kind === 'book')) {
@@ -833,8 +847,13 @@ async function importLink(url, existingID = null, fromClip = false) {
 
 function importPendingClip() {
   if (!clipReady || !pendingClipURL) return;
+  if (!account) {
+    document.documentElement.dataset.kornuClipState = 'auth-required';
+    return;
+  }
   const rawURL = pendingClipURL;
   pendingClipURL = null;
+  sessionStorage.removeItem('kornu.pendingClip');
   if (location.hash.startsWith('#/clip?')) history.replaceState(null, '', '#/library');
   let url;
   try {
@@ -1023,6 +1042,7 @@ window.addEventListener('scroll', () => {
 }, { passive: true });
 window.addEventListener('hashchange', () => {
   pendingClipURL = clipFromHash() || pendingClipURL;
+  if (pendingClipURL) sessionStorage.setItem('kornu.pendingClip', pendingClipURL);
   const parts = location.hash.split('/');
   view = ['inbox', 'library', 'marks', 'reader'].includes(parts[1]) ? parts[1] : 'library';
   readerID = view === 'reader' ? parts[2] : null;
@@ -1041,5 +1061,11 @@ preloadCovers();
 if (cloud.configured) {
   cloud.onAuthChange((user) => switchAccount(user));
   cloud.session().then((session) => switchAccount(session?.user || null)).then(() => { clipReady = true; importPendingClip(); })
-    .catch((error) => notify(error.message || 'Your account could not be opened.'));
-} else importPendingClip();
+    .catch((error) => {
+      authReady = true;
+      clipReady = true;
+      render();
+      profileLoadPromise.then(importPendingClip);
+      notify(error.message || 'Your account could not be opened.');
+    });
+}

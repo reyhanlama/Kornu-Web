@@ -1,4 +1,4 @@
-const DEFAULT_SITE = 'http://127.0.0.1:4174/';
+const DEFAULT_SITE = 'https://kornu.netlify.app/';
 const title = document.querySelector('#page-title');
 const host = document.querySelector('#page-host');
 const articleContext = document.querySelector('#article-context');
@@ -134,6 +134,19 @@ function showHandoff() {
   message.textContent = 'This browser finishes saving in an active Kornu tab.';
 }
 
+function showAuthRequired() {
+  phase = 'auth-required';
+  present('Sign in to save.', originalTitle, '↗', 'permission');
+  saveButton.disabled = false;
+  saveButton.classList.remove('is-saving', 'is-saved', 'is-review');
+  saveLabel.textContent = 'Continue in Kornu';
+  saveSymbol.textContent = '→';
+  captureSteps.hidden = true;
+  siteInput.disabled = false;
+  message.classList.remove('is-success', 'is-pending');
+  message.textContent = 'Your article is waiting. Sign in to Kornu to finish saving it.';
+}
+
 function showError(error, siteError = false) {
   phase = 'error';
   present(originalTitle);
@@ -170,7 +183,7 @@ async function waitForCapture(tabID) {
     try {
       const result = await readClipState(tabID);
       if (result.state) sawKornu = true;
-      if (['saved', 'review', 'saved-local', 'review-local', 'invalid'].includes(result.state)) return result;
+      if (['saved', 'review', 'saved-local', 'review-local', 'invalid', 'auth-required', 'setup-required'].includes(result.state)) return result;
       if (result.state === 'capturing') showSaving('Saving article…', 'Preparing the text.', 'capturing');
       else if (result.state === 'images') showSaving('Saving images…', 'Keeping the article images with your reading.', 'images');
       else if (result.state === 'initializing') showSaving('Opening library…', 'Checking your Kornu library.', 'opening');
@@ -218,6 +231,11 @@ siteInput.addEventListener('change', async () => {
 });
 
 saveButton.addEventListener('click', async () => {
+  if (phase === 'auth-required') {
+    if (clipTabID) await chrome.tabs.update(clipTabID, { active: true });
+    window.close();
+    return;
+  }
   if (['saved', 'review', 'saved-local', 'review-local'].includes(phase)) {
     await chrome.tabs.create({ url: readingURL.href, active: true });
     window.close();
@@ -264,6 +282,12 @@ saveButton.addEventListener('click', async () => {
       await chrome.tabs.remove(clipTabID).catch(() => {});
       clipTabID = null;
       showResult(result.state, result.issue);
+    } else if (result.state === 'auth-required') {
+      showAuthRequired();
+    } else if (result.state === 'setup-required') {
+      await chrome.tabs.remove(clipTabID).catch(() => {});
+      clipTabID = null;
+      showError(new Error('This Kornu site needs account storage set up before it can save readings.'), true);
     } else if (result.state === 'invalid') {
       await chrome.tabs.remove(clipTabID).catch(() => {});
       clipTabID = null;

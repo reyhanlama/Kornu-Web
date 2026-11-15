@@ -9,6 +9,9 @@ if (Boolean(url) !== Boolean(key)) {
 if (url && new URL(url).protocol !== 'https:') {
   throw new Error('KORNU_SUPABASE_URL must use HTTPS.');
 }
+if (key && !key.startsWith('sb_publishable_')) {
+  throw new Error('KORNU_SUPABASE_PUBLISHABLE_KEY must be a Supabase publishable key (sb_publishable_...).');
+}
 
 await mkdir('public/vendor', { recursive: true });
 await build({

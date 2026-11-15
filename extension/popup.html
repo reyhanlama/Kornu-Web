@@ -11,26 +11,29 @@
     <main class="clipper">
       <header class="masthead">
         <img src="wordmark.svg" alt="Kornu" width="112" height="34">
-        <span>CLIPPER</span>
+        <span class="brand-mark" aria-hidden="true">✳</span>
       </header>
 
       <section class="clip-content" aria-labelledby="page-title">
-        <p class="section-label"><span class="label-dot" aria-hidden="true"></span>CURRENT PAGE</p>
+        <div class="source-row"><p class="source-line"><span>FROM</span><strong class="page-host" id="page-host"></strong></p><span class="status-mark" id="status-mark" hidden aria-hidden="true"></span></div>
         <h1 id="page-title">Reading this tab…</h1>
-        <p class="page-host" id="page-host"></p>
+        <p class="article-context" id="article-context" hidden></p>
         <button id="save" type="button" disabled>
-          <span class="save-label">Save to Kornu</span>
-          <span class="save-symbol" aria-hidden="true">↗</span>
+          <span class="save-label">Save reading</span>
+          <span class="save-symbol" aria-hidden="true">→</span>
         </button>
+        <div class="capture-steps" id="capture-steps" hidden aria-hidden="true">
+          <span></span><span></span><span></span>
+        </div>
         <p id="message" role="status" aria-live="polite"></p>
       </section>
 
       <details class="site-settings">
-        <summary><span>Saving to <strong id="site-name">Kornu web</strong></span><span class="change-label">Change <span aria-hidden="true">⌄</span></span></summary>
+        <summary><span class="destination-label">Kornu library</span><span class="change-label">Settings</span></summary>
         <div class="site-settings-body">
           <label for="site-url">Kornu web address</label>
           <input id="site-url" type="url" spellcheck="false" placeholder="https://your-site.netlify.app/">
-          <p>Choose where this browser opens your library.</p>
+          <p id="site-hint" role="status" aria-live="polite">Choose where future saves open your library.</p>
         </div>
       </details>
     </main>

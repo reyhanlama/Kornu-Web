@@ -20,6 +20,10 @@ The extension's **Kornu site** field defaults to `http://127.0.0.1:4174/` for th
 
 After changing extension files locally, use **Reload** on the Kornu Clipper card in `chrome://extensions` before testing the updated popup. Chrome caches the manifest until this step; refreshing the article or Kornu tab does not update extension permissions. If Chrome reports “Only permissions specified in the manifest may be requested,” reload the extension and reopen its popup.
 
+### Preview the clipper design
+
+Run `npm run clipper:preview` and open `http://127.0.0.1:4185/clipper-lab/`. This local design canvas loads the extension's real popup HTML, CSS, and JavaScript with simulated browser APIs. Choose a scenario, play the full capture, or hold the Text, Images, and Outcome states for visual review. Article context and the event log are in the collapsed controls below the popup. The preview does not import an article or change a real Kornu library. The preview files live outside `extension/`, so they are not part of the unpacked extension.
+
 ## Deploy on Netlify
 
 Connect this repository to a Netlify site and deploy the `main` branch. The checked-in `netlify.toml` sets the publish directory to `public`, runs the project checks and account client build, and bundles the article capture function. Keep the base directory at the repository root. Netlify installs the npm dependencies and uses Node 24 from `.nvmrc`.

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Kornu Clipper",
-  "description": "Save the page in your current tab to Kornu without leaving it.",
-  "version": "0.2.2",
+  "description": "Save articles to your Kornu reading library.",
+  "version": "0.2.3",
   "permissions": ["activeTab", "storage", "scripting"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],

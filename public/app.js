@@ -807,6 +807,7 @@ async function importLink(url, existingID = null, fromClip = false) {
   save(item.id); render();
   if (fromClip) {
     document.documentElement.dataset.kornuClipReadingId = item.id;
+    document.documentElement.dataset.kornuClipIssue = item.issue || '';
     const finalState = item.status === 'ready' ? 'saved' : 'review';
     if (account) {
       clipPendingSync = { id: item.id, state: finalState };
@@ -829,6 +830,7 @@ function importPendingClip() {
   if (existing) {
     route('reader', existing.id);
     document.documentElement.dataset.kornuClipReadingId = existing.id;
+    document.documentElement.dataset.kornuClipIssue = existing.issue || '';
     document.documentElement.dataset.kornuClipState = existing.status === 'ready' ? 'saved' : 'review';
     notify('Already in your library.');
     return;

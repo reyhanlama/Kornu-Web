@@ -9,6 +9,7 @@
     "dev": "node server.js",
     "prestart": "node build.js",
     "start": "node server.js",
+    "clipper:preview": "node clipper-lab/server.js",
     "test": "node --test"
   },
   "dependencies": {

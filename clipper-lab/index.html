@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kornu Clipper preview</title>
+  <link rel="stylesheet" href="studio.css">
+  <script src="studio.js" type="module"></script>
+</head>
+<body>
+  <main class="studio">
+    <header class="studio-header">
+      <div class="studio-title"><span>KORNU</span><h1>Clipper <em>preview</em></h1></div>
+      <button id="play" type="button">Replay capture <span aria-hidden="true">↗</span></button>
+    </header>
+
+    <nav class="scenarios" aria-label="Preview scenarios">
+      <button class="scenario selected" data-scenario="standard"><strong>Ready</strong></button>
+      <button class="scenario" data-scenario="long"><strong>Long title</strong></button>
+      <button class="scenario" data-scenario="review"><strong>Review</strong></button>
+      <button class="scenario" data-scenario="local"><strong>Local save</strong></button>
+      <button class="scenario" data-scenario="permission"><strong>Permission</strong></button>
+      <button class="scenario" data-scenario="active"><strong>Active tab</strong></button>
+      <button class="scenario" data-scenario="unsupported"><strong>Unsupported</strong></button>
+    </nav>
+
+    <section class="canvas" aria-label="Interactive extension popup preview">
+      <div class="canvas-meta"><span>LIVE POPUP</span><span id="canvas-state">READY</span></div>
+      <div class="canvas-stage">
+        <div class="popup-wrap"><iframe id="popup-frame" title="Kornu Clipper interactive popup"></iframe></div>
+      </div>
+      <div class="stage-rail" aria-label="Inspect capture stage">
+        <span>INSPECT</span>
+        <button class="stage selected" data-stage="ready">Ready</button>
+        <button class="stage" data-stage="capturing">Text</button>
+        <button class="stage" data-stage="images">Images</button>
+        <button class="stage" data-stage="result">Outcome</button>
+      </div>
+      <div id="active-handoff" class="active-handoff" hidden>Kornu opens in an active tab. Capture continues there.</div>
+    </section>
+
+    <div class="tools">
+      <details class="tool-panel" id="context-panel">
+        <summary>Edit article context <span aria-hidden="true">＋</span></summary>
+        <div class="tool-content">
+          <label for="article-title">Article title</label><textarea id="article-title" rows="2"></textarea>
+          <label for="article-url">Article URL</label><input id="article-url" type="url" spellcheck="false">
+          <label for="kornu-url">Kornu site</label><input id="kornu-url" type="url" spellcheck="false">
+          <button id="apply" type="button">Update preview</button>
+        </div>
+      </details>
+      <details class="tool-panel" id="events-panel">
+        <summary>Event log <span aria-hidden="true">＋</span></summary>
+        <div class="tool-content"><ol id="events" aria-live="polite"><li>Ready to try a scenario.</li></ol><button id="clear-events" type="button">Clear events</button></div>
+      </details>
+    </div>
+    <p class="preview-note">Uses the extension’s actual popup. Browser responses are simulated; no article or library data is changed.</p>
+  </main>
+</body>
+</html>

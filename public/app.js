@@ -671,12 +671,12 @@ async function hydrateReading(id) {
 }
 
 function render() {
+  const token = ++bookMountToken;
+  if (activeBookView) { activeBookView.close(); activeBookView = null; }
   if (!cloud.configured || !authReady || !account) {
     $('#app').innerHTML = accessView();
     return;
   }
-  const token = ++bookMountToken;
-  if (activeBookView) { activeBookView.close(); activeBookView = null; }
   if (view === 'reader' && (!reading() || reading().kind === 'book')) {
     view = 'library'; readerID = null;
     if (location.hash !== '#/library') history.replaceState(null, '', '#/library');

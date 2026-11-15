@@ -151,15 +151,28 @@ function navItem(area, label, symbol) {
   return `<button class="nav-item ${view === area || (view === 'reader' && area === 'library') ? 'active' : ''}" data-route="${area}">${icon(symbol)}<span>${label}</span>${area === 'inbox' && visibleReadings().some((item) => item.status !== 'ready') ? '<i class="nav-dot"></i>' : ''}</button>`;
 }
 
+function profileName() {
+  return account?.user_metadata?.full_name || account?.user_metadata?.name || account?.email?.split('@')[0] || 'Your profile';
+}
+
+function profileInitials() {
+  return profileName().split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase();
+}
+
+function accountMenu() {
+  const trigger = account ? `<span class="account-avatar" aria-hidden="true">${esc(profileInitials())}</span><span class="account-trigger-name">${esc(profileName().split(' ')[0])}</span>` : `${icon('dots', 20)}<span>More</span>`;
+  const profile = account ? `<button class="menu-profile" data-action="account"><span class="account-avatar" aria-hidden="true">${esc(profileInitials())}</span><span class="menu-profile-copy"><strong>${esc(profileName())}</strong><small>${esc(account.email || '')}</small></span></button><div class="more-status" data-cloud-status>${esc(cloudStatus)}</div><button data-action="account">${icon('account', 17)} View profile</button>` : `<div class="more-status" data-cloud-status>Saved in this browser</div><button data-action="account">${icon('account', 17)} Sign in with Google</button>`;
+  return `<details class="topbar-more account-menu"><summary aria-label="${account ? 'Open profile menu' : 'More options'}">${trigger}</summary><div class="more-panel">${profile}<button data-action="backup">${icon('download', 17)} Export backup</button>${account ? `<div class="menu-divider"></div><button data-action="sign-out">Sign out</button>` : ''}</div></details>`;
+}
+
 function shell(content, title, kicker = '') {
-  const accountName = account?.user_metadata?.full_name || account?.email || 'Your account';
   const split = view === 'library' || view === 'reader';
-  const main = split ? `<div class="split-workspace"><aside class="split-library"><div class="split-library-head"><button class="top-brand" data-route="library" aria-label="Kornu library"><img src="/wordmark.svg" alt="Kornu"></button><nav class="split-nav" aria-label="Primary">${navItem('library', 'Library', 'book')}${navItem('marks', 'Marks & Notes', 'mark')}${navItem('inbox', 'Inbox', 'tray')}</nav><details class="topbar-more"><summary aria-label="More options">${icon('dots', 20)}</summary><div class="more-panel"><div class="more-status" data-cloud-status>${esc(account ? cloudStatus : 'Saved in this browser')}</div><button data-action="account">${icon('account', 17)} ${esc(account ? accountName : 'Sign in with Google')}</button><button data-action="backup">${icon('download', 17)} Export backup</button></div></details></div>${libraryPanel()}</aside><section class="split-reading">${content}</section></div>` : content;
+  const main = split ? `<div class="split-workspace"><aside class="split-library"><div class="split-library-head"><button class="top-brand" data-route="library" aria-label="Kornu library"><img src="/wordmark.svg" alt="Kornu"></button><nav class="split-nav" aria-label="Primary">${navItem('library', 'Library', 'book')}${navItem('marks', 'Marks & Notes', 'mark')}${navItem('inbox', 'Inbox', 'tray')}</nav>${accountMenu()}</div>${libraryPanel()}</aside><section class="split-reading">${content}</section></div>` : content;
   return `<div class="app-shell view-${view}">
     <header class="topbar"><button class="top-brand" data-route="library" aria-label="Kornu library"><img src="/wordmark.svg" alt="Kornu"></button>
       <nav class="top-nav" aria-label="Primary">${navItem('library', 'Library', 'book')}${navItem('marks', 'Marks & Notes', 'mark')}${navItem('inbox', 'Inbox', 'tray')}</nav>
       <div class="topbar-actions">${view === 'reader' ? '' : `<button class="primary-button" data-action="add" aria-label="Add a reading">${icon('plus', 17)}<span>Add a reading</span></button>`}
-        <details class="topbar-more"><summary aria-label="More options">${icon('dots', 20)}<span>More</span></summary><div class="more-panel"><div class="more-status" data-cloud-status>${esc(account ? cloudStatus : 'Saved in this browser')}</div><button data-action="account" aria-label="${esc(account ? `Account: ${accountName}` : 'Sign in with Google')}">${icon('account', 17)} ${esc(account ? accountName : 'Sign in with Google')}</button><button data-action="backup" aria-label="Export backup">${icon('download', 17)} Export backup</button></div></details>
+        ${accountMenu()}
       </div></header>
     <div class="workspace"><main class="main-content">${main}</main></div>
     <nav class="mobile-nav" aria-label="Primary mobile">${navItem('library', 'Library', 'book')}${navItem('inbox', 'Inbox', 'tray')}${navItem('marks', 'Marks', 'mark')}</nav>
@@ -344,7 +357,9 @@ function accountModal() {
     showModal(`<div class="modal-overline">KORNU ACCOUNT</div><button class="modal-close" data-action="close-modal" aria-label="Close">${icon('close')}</button><h2>Take your readings with you.</h2><p>Sign in to save articles, images, highlights, notes, and reading progress to your private profile.</p><div class="modal-actions"><button class="outline-button" data-action="close-modal">Not now</button><button class="primary-button" data-action="sign-in-google">Continue with Google ${icon('arrow', 16)}</button></div><div class="modal-footnote">Your current browser library stays here until you choose to copy it into your profile.</div>`);
     return;
   }
-  showModal(`<div class="modal-overline">YOUR KORNU ACCOUNT</div><button class="modal-close" data-action="close-modal" aria-label="Close">${icon('close')}</button><h2>Your reading space.</h2><p>${esc(account.email || 'Signed in with Google')}</p><p class="account-modal-status">${esc(cloudStatus)}</p>${hasGuestLibrary() ? `<button class="outline-button account-import-button" data-action="copy-browser-library">Copy this browser's library into my profile</button>` : ''}<div class="modal-actions"><button class="outline-button" data-action="sign-out">Sign out</button><button class="primary-button" data-action="close-modal">Done</button></div>`);
+  const saved = visibleReadings().filter((item) => item.source !== 'Kornu sample').length;
+  const marks = store.marks.length;
+  showModal(`<div class="modal-overline">KORNU PROFILE</div><button class="modal-close" data-action="close-modal" aria-label="Close">${icon('close')}</button><div class="profile-identity"><span class="account-avatar profile-avatar" aria-hidden="true">${esc(profileInitials())}</span><div><h2>${esc(profileName())}</h2><p>${esc(account.email || '')}</p></div></div><div class="profile-save-state"><span class="profile-state-dot"></span><span data-cloud-status>${esc(cloudStatus)}</span></div><div class="profile-stats"><div><strong>${saved}</strong><span>Saved article${saved === 1 ? '' : 's'}</span></div><div><strong>${marks}</strong><span>Mark${marks === 1 ? '' : 's'} & notes</span></div></div>${hasGuestLibrary() ? `<button class="profile-import" data-action="copy-browser-library">Copy this browser's library into my profile ${icon('arrow', 16)}</button>` : ''}<div class="profile-footer"><button data-action="sign-out">Sign out</button><button class="primary-button" data-action="close-modal">Done</button></div>`);
 }
 
 async function copyBrowserLibrary() {
@@ -422,7 +437,7 @@ function libraryPanel() {
   });
   const featured = ready.find((item) => item.id === readerID && store.progress[item.id] > 0 && store.progress[item.id] < 100)
     || ready.find((item) => store.progress[item.id] > 0 && store.progress[item.id] < 100);
-  const intro = `<div class="page-heading"><div><h1>Library</h1><p>${ready.length} saved article${ready.length === 1 ? '' : 's'}.</p></div><button class="primary-button library-add" data-action="add">${icon('plus', 17)} Add a link</button></div>`;
+  const intro = `<div class="page-heading"><div>${account ? `<div class="library-personal-label">${esc(profileName())}'s reading space</div>` : ''}<h1>Library</h1><p>${ready.length} saved article${ready.length === 1 ? '' : 's'}.</p></div><button class="primary-button library-add" data-action="add">${icon('plus', 17)} Add a link</button></div>`;
   const feature = !search && filter === 'all' && featured ? `<section class="continue-section"><button class="continue-reading ${featured.id === readerID ? 'selected' : ''}" data-open="${esc(featured.id)}">${featureSource(featured) ? `<img class="continue-cover" src="${esc(featureSource(featured))}" alt="" loading="lazy">` : abstractCover()}<span class="continue-copy"><strong>${esc(featured.title)}</strong><span class="continue-source">${esc(featured.source)}</span><span class="continue-progress"><span class="progress-track"><span style="width:${Math.max(0, Math.min(100, store.progress[featured.id] || 0))}%"></span></span><span>${store.progress[featured.id]}% read</span></span></span></button></section>` : '';
   const filters = `<label class="status-filter">Status <select id="status-filter" aria-label="Filter by reading status"><option value="all" ${filter === 'all' ? 'selected' : ''}>All</option><option value="unread" ${filter === 'unread' ? 'selected' : ''}>Not started</option><option value="reading" ${filter === 'reading' ? 'selected' : ''}>In progress</option><option value="finished" ${filter === 'finished' ? 'selected' : ''}>Finished</option></select></label>`;
   const otherReadings = feature ? filtered.filter((item) => item.id !== featured.id) : filtered;

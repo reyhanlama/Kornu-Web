@@ -32,7 +32,7 @@ Deploy from the Git repository so Netlify builds the `netlify/functions` code. U
 
 ## Activate Google sign-in and private profiles
 
-The account interface and storage code are prepared, but Google sign-in will remain unavailable until Kornu has a Supabase project. To activate it:
+The production Netlify site is connected to Kornu's Supabase project and Google provider. Google OAuth is currently in **Testing** mode, so only accounts added as test users in Google Auth Platform → Audience can sign in. To set up another deployment:
 
 1. Create a Supabase project. In its SQL Editor, run [`supabase/schema.sql`](supabase/schema.sql). This creates a private `kornu_readings` table and private `kornu-assets` bucket with per-user access rules.
 2. In Google Cloud, create an OAuth **Web application** client. Add the production Kornu origin (and each local origin used for testing) under **Authorized JavaScript origins**. Set its **Authorized redirect URI** to the Supabase callback URL shown under Supabase **Authentication → Providers → Google** (usually `https://PROJECT_REF.supabase.co/auth/v1/callback`). Add its client ID and client secret to that Supabase Google provider and enable it. Keep the Google client secret in Supabase; it does not belong in this repository or Netlify's public build variables.

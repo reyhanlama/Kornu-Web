@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kornu Clipper store screenshot preview</title>
+  <style>
+    * { box-sizing:border-box; }
+    html,body { width:1280px;height:800px;margin:0;overflow:hidden; }
+    body { background:#eae4e9;color:#321b39;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased; }
+    .browser { position:absolute;inset:27px 31px 25px;border-radius:16px;background:#fffcfa;box-shadow:0 24px 70px rgba(50,27,57,.14);overflow:hidden; }
+    .browser-top { height:52px;display:flex;align-items:center;gap:16px;padding:0 22px;border-bottom:1px solid #ebe4ea;background:#fbf8fa; }
+    .dots { display:flex;gap:7px; }
+    .dots i { width:9px;height:9px;border-radius:50%;background:#d3c8d1; }
+    .dots i:first-child { background:#ed9f8c; }
+    .address { width:570px;height:29px;margin:auto;display:flex;align-items:center;padding:0 15px;border:1px solid #e9e2e8;border-radius:8px;background:white;color:#847889;font-size:11px;letter-spacing:.01em; }
+    .address span { color:#4c3c52; }
+    .browser-mark { width:23px;height:23px;display:grid;place-items:center;border-radius:6px;background:#321b39;color:#fff;font-family:Georgia,serif;font-size:17px; }
+    .article { width:720px;margin:0 auto;padding:57px 20px 0 35px;transform:translateX(-120px); }
+    .article-kicker { color:#e76232;font-size:11px;font-weight:700;letter-spacing:.16em; }
+    .article h1 { width:590px;margin:19px 0 20px;font-family:Georgia,serif;font-size:58px;font-weight:400;line-height:1.06;letter-spacing:-.055em; }
+    .article-meta { display:flex;align-items:center;gap:13px;color:#8a7d8d;font-size:12px; }
+    .article-meta i { width:4px;height:4px;border-radius:50%;background:#e76232; }
+    .article-rule { width:560px;height:1px;margin:36px 0 37px;background:#e9e3e9; }
+    .article p { width:625px;margin:0 0 23px;font-family:Georgia,serif;font-size:21px;line-height:1.6;color:#453849; }
+    .article p:last-child { color:#867b88; }
+    .popup-shell { position:absolute;top:128px;right:66px;width:360px;min-height:345px;border:1px solid #e4dce4;border-radius:6px;background:#fffcfa;box-shadow:0 30px 65px rgba(45,24,53,.22),0 5px 15px rgba(45,24,53,.08);overflow:hidden; }
+    iframe { display:block;width:360px;height:350px;border:0;background:#fffcfa; }
+    .caption { position:absolute;right:66px;top:506px;width:360px;display:flex;justify-content:space-between;color:#6e5f73;font-size:12px; }
+    .caption strong { color:#e76232;font-weight:700;letter-spacing:.12em;text-transform:uppercase;font-size:10px; }
+  </style>
+</head>
+<body>
+  <div class="browser">
+    <div class="browser-top"><div class="dots"><i></i><i></i><i></i></div><div class="address"><span>example.com</span>/journal/the-art-of-paying-attention</div><div class="browser-mark">K</div></div>
+    <article class="article" aria-label="Sample article">
+      <div class="article-kicker">SAMPLE ARTICLE / READING</div>
+      <h1>The art of paying attention</h1>
+      <div class="article-meta"><span>Kornu sample</span><i></i><span>8 min read</span></div>
+      <div class="article-rule"></div>
+      <p>There is a kind of attention that asks nothing of us except that we stay a little longer.</p>
+      <p>We look again at the room, the street, the familiar face, and something ordinary begins to acquire its own shape.</p>
+      <p>A notebook can hold these moments before they disappear. When we return, the page carries the first reading alongside the second.</p>
+    </article>
+    <div class="popup-shell"><iframe id="popup" title="Kornu Clipper popup"></iframe></div>
+    <div class="caption"><span>Save the page you are reading</span><strong>Kornu Clipper</strong></div>
+  </div>
+  <script type="module" src="store-shot.js"></script>
+</body>
+</html>

@@ -60,6 +60,8 @@ h1 { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; ove
 .site-settings input { width:100%; min-height:41px; padding:9px 10px; border:1px solid #ded5de; border-radius:4px; background:#fff; color:var(--ink); font-size:12px; }
 .site-settings-body p { margin:8px 0 0; color:var(--muted); font-size:10px; line-height:1.45; }
 .site-settings-body p.is-error { color:#a33f32; }
+.privacy-link { display:inline-block;margin-top:14px;color:var(--muted);font-size:10px;text-decoration:underline;text-underline-offset:3px; }
+.privacy-link:hover { color:var(--ink); }
 #save:focus-visible,summary:focus-visible,input:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 @keyframes arrive { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:translateY(0); } }
 @keyframes spin { to { transform:rotate(360deg); } }
